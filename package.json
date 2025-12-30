@@ -1,0 +1,66 @@
+{
+  "name": "polymarket-dump-hedge",
+  "version": "0.1.0",
+  "description": "全自动化Polymarket预测市场套利机器人 - 暴跌接针+无风险对冲策略",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "bot": "tsx src/index.ts",
+    "bot:dry": "tsx src/index.ts --dry-run",
+    "recorder": "tsx src/recorder.ts",
+    "backtest": "tsx src/backtest.ts",
+    "dashboard": "tsx src/dashboard.ts",
+    "dashboard:dry": "tsx src/dashboard.ts --dry-run",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "polymarket",
+    "trading-bot",
+    "arbitrage",
+    "cryptocurrency",
+    "prediction-market"
+  ],
+  "author": "Kyd",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0",
+    "better-sqlite3": "^11.6.0",
+    "ethers": "^6.13.4",
+    "dotenv": "^16.4.7",
+    "winston": "^3.17.0",
+    "eventemitter3": "^5.0.1",
+    "axios": "^1.7.9",
+    "yargs": "^17.7.2",
+    "blessed": "^0.1.81",
+    "chalk": "^5.3.0",
+    "date-fns": "^4.1.0",
+    "uuid": "^11.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "tsx": "^4.19.2",
+    "vitest": "^2.1.8",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^8.57.1",
+    "@typescript-eslint/eslint-plugin": "^8.18.1",
+    "@typescript-eslint/parser": "^8.18.1",
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/yargs": "^17.0.33",
+    "@types/blessed": "^0.1.25",
+    "@types/uuid": "^10.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
