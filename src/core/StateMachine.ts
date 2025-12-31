@@ -210,7 +210,7 @@ export class StateMachine {
       ...leg1,
     });
 
-    const success = this.transition('LEG1_FILLED', 'leg1_filled', leg1);
+    const success = this.transition('LEG1_FILLED', 'leg1_filled', leg1 as unknown as Record<string, unknown>);
 
     if (success) {
       eventBus.emitEvent('cycle:leg1_filled', {

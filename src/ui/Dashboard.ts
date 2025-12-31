@@ -7,8 +7,7 @@
 import * as blessed from 'blessed';
 import { TradingEngine } from '../core/index.js';
 import { eventBus } from '../utils/EventBus.js';
-import { logger } from '../utils/logger.js';
-import {
+import type {
   PriceSnapshot,
   DumpSignal,
   TradeCycle,
@@ -220,8 +219,7 @@ export class Dashboard {
     this.screen.key(['s'], async () => {
       if (!this.engine) return;
 
-      const status = this.engine.getStatus();
-      if (status.isRunning) {
+      if (this.engine.isEngineRunning()) {
         this.log('{yellow-fg}停止交易引擎...{/yellow-fg}');
         await this.engine.stop();
       } else {
@@ -268,7 +266,7 @@ export class Dashboard {
    */
   private setupEventListeners(): void {
     // 价格更新
-    eventBus.on('price:update', (snapshot: PriceSnapshot) => {
+    eventBus.onEvent('price:update', (snapshot: PriceSnapshot) => {
       this.priceHistory.push(snapshot);
       if (this.priceHistory.length > this.maxPriceHistory) {
         this.priceHistory.shift();
@@ -277,67 +275,61 @@ export class Dashboard {
     });
 
     // 暴跌信号
-    eventBus.on('dump:detected', (signal: DumpSignal) => {
+    eventBus.onEvent('price:dump_detected', (signal: DumpSignal) => {
       this.log(
-        `{red-fg}🚨 暴跌! ${signal.side} ${signal.startPrice.toFixed(4)} → ${signal.endPrice.toFixed(4)} ` +
-        `(${(signal.pctChange * 100).toFixed(2)}%){/red-fg}`
+        `{red-fg}🚨 暴跌! ${signal.side} ${signal.previousPrice.toFixed(4)} → ${signal.price.toFixed(4)} ` +
+        `(${(signal.dropPct * 100).toFixed(2)}%){/red-fg}`
       );
     });
 
-    // 状态变化
-    eventBus.on('state:change', (data: { from: CycleStatus; to: CycleStatus; cycleId: string }) => {
-      this.log(`{cyan-fg}状态: ${data.from} → ${data.to}{/cyan-fg}`);
-      this.updateStatus();
-    });
-
     // 订单事件
-    eventBus.on('order:submitted', (order: Order) => {
-      this.log(`{blue-fg}📤 订单提交: ${order.side} ${order.shares} @ ${order.price.toFixed(4)}{/blue-fg}`);
+    eventBus.onEvent('order:submitted', (order: Order) => {
+      this.log(`{blue-fg}📤 订单提交: ${order.side} ${order.shares} @ ${order.price?.toFixed(4) || 'MKT'}{/blue-fg}`);
     });
 
-    eventBus.on('order:filled', (order: Order) => {
-      this.log(`{green-fg}✅ 订单成交: ${order.side} @ ${order.fillPrice?.toFixed(4)}{/green-fg}`);
+    eventBus.onEvent('order:filled', (order: Order) => {
+      this.log(`{green-fg}✅ 订单成交: ${order.side} @ ${order.avgFillPrice?.toFixed(4)}{/green-fg}`);
     });
 
-    eventBus.on('order:failed', (data: { order: Order; error: string }) => {
-      this.log(`{red-fg}❌ 订单失败: ${data.error}{/red-fg}`);
+    eventBus.onEvent('order:error', (data: { order: Order; error: Error }) => {
+      this.log(`{red-fg}❌ 订单失败: ${data.error.message}{/red-fg}`);
     });
 
     // 交易周期完成
-    eventBus.on('cycle:completed', (cycle: TradeCycle) => {
+    eventBus.onEvent('cycle:completed', ({ cycle, profit }: { cycle: TradeCycle; profit: number }) => {
       this.recentTrades.unshift(cycle);
       if (this.recentTrades.length > 20) {
         this.recentTrades.pop();
       }
       this.updateTrades();
       this.log(
-        `{green-fg}🎉 交易完成! 净利润: $${cycle.netProfit?.toFixed(2)}{/green-fg}`
+        `{green-fg}🎉 交易完成! 净利润: $${profit.toFixed(2)}{/green-fg}`
       );
     });
 
     // WebSocket 事件
-    eventBus.on('ws:connected', () => {
+    eventBus.onEvent('ws:connected', () => {
       this.log('{green-fg}📡 WebSocket 已连接{/green-fg}');
       this.updateStatus();
     });
 
-    eventBus.on('ws:disconnected', () => {
+    eventBus.onEvent('ws:disconnected', () => {
       this.log('{yellow-fg}📡 WebSocket 断开{/yellow-fg}');
       this.updateStatus();
     });
 
-    eventBus.on('ws:reconnecting', (attempt: number) => {
+    eventBus.onEvent('ws:reconnecting', ({ attempt }) => {
       this.log(`{yellow-fg}📡 重连中... #${attempt}{/yellow-fg}`);
     });
 
     // 回合事件
-    eventBus.on('round:new', (data: { roundId: string; endTime: number }) => {
-      this.log(`{cyan-fg}📅 新回合: ${data.roundId}{/cyan-fg}`);
+    eventBus.onEvent('round:new', (data: { roundSlug: string; startTime: number }) => {
+      this.log(`{cyan-fg}📅 新回合: ${data.roundSlug}{/cyan-fg}`);
       this.updateStatus();
     });
 
     // 错误
-    eventBus.on('error', (error: Error) => {
+    eventBus.onEvent('system:error', (error: Error) => {
       this.log(`{red-fg}❌ 错误: ${error.message}{/red-fg}`);
     });
   }
@@ -354,19 +346,19 @@ export class Dashboard {
    * 更新价格显示
    */
   private updatePrice(snapshot: PriceSnapshot): void {
-    const sum = snapshot.upPrice + snapshot.downPrice;
+    const sum = snapshot.upBestAsk + snapshot.downBestAsk;
     const sumColor = sum <= 0.95 ? 'green' : sum <= 0.98 ? 'yellow' : 'red';
 
     // 简单的 ASCII 价格柱状图
-    const upBar = '█'.repeat(Math.floor(snapshot.upPrice * 20));
-    const downBar = '█'.repeat(Math.floor(snapshot.downPrice * 20));
+    const upBar = '█'.repeat(Math.floor(snapshot.upBestAsk * 20));
+    const downBar = '█'.repeat(Math.floor(snapshot.downBestAsk * 20));
 
     const content = [
       '',
-      `  UP   Price: {bold}${snapshot.upPrice.toFixed(4)}{/bold}`,
+      `  UP   Price: {bold}${snapshot.upBestAsk.toFixed(4)}{/bold}`,
       `  {green-fg}${upBar}{/green-fg}`,
       '',
-      `  DOWN Price: {bold}${snapshot.downPrice.toFixed(4)}{/bold}`,
+      `  DOWN Price: {bold}${snapshot.downBestAsk.toFixed(4)}{/bold}`,
       `  {red-fg}${downBar}{/red-fg}`,
       '',
       `  SUM: {${sumColor}-fg}{bold}${sum.toFixed(4)}{/bold}{/${sumColor}-fg}`,
@@ -386,8 +378,12 @@ export class Dashboard {
       return;
     }
 
-    const status = this.engine.getStatus();
-    const stateColor = {
+    const isRunning = this.engine.isEngineRunning();
+    const currentState = this.engine.getStateMachine().getCurrentStatus();
+    const currentCycle = this.engine.getStateMachine().getCurrentCycle();
+    const currentRound = this.engine.getRoundManager().getCurrentRoundSlug();
+
+    const stateColor: Record<CycleStatus, string> = {
       'IDLE': 'white',
       'WATCHING': 'cyan',
       'LEG1_PENDING': 'yellow',
@@ -396,14 +392,14 @@ export class Dashboard {
       'COMPLETED': 'green',
       'ROUND_EXPIRED': 'red',
       'ERROR': 'red',
-    }[status.currentState] || 'white';
+    };
 
     const content = [
       '',
-      `  运行状态: ${status.isRunning ? '{green-fg}运行中 ✅{/green-fg}' : '{red-fg}已停止 ❌{/red-fg}'}`,
-      `  当前状态: {${stateColor}-fg}{bold}${status.currentState}{/bold}{/${stateColor}-fg}`,
-      `  当前回合: ${status.currentRound || 'N/A'}`,
-      status.activeCycle ? `  活跃周期: ${status.activeCycle.slice(0, 8)}...` : '',
+      `  运行状态: ${isRunning ? '{green-fg}运行中 ✅{/green-fg}' : '{red-fg}已停止 ❌{/red-fg}'}`,
+      `  当前状态: {${stateColor[currentState]}-fg}{bold}${currentState}{/bold}{/${stateColor[currentState]}-fg}`,
+      `  当前回合: ${currentRound || 'N/A'}`,
+      currentCycle ? `  活跃周期: ${currentCycle.id.slice(0, 8)}...` : '',
       '',
       `  {gray-fg}更新时间: ${new Date().toLocaleTimeString()}{/gray-fg}`,
     ].filter(Boolean).join('\n');
@@ -417,13 +413,13 @@ export class Dashboard {
    */
   private updateTrades(): void {
     const items = this.recentTrades.map(trade => {
-      const profit = trade.netProfit || 0;
+      const profit = trade.profit || 0;
       const profitStr = profit >= 0
         ? `+$${profit.toFixed(2)}`
         : `-$${Math.abs(profit).toFixed(2)}`;
       const color = profit >= 0 ? 'green' : 'red';
 
-      return `{${color}-fg}${trade.leg1Side} ${profitStr}{/${color}-fg}`;
+      return `{${color}-fg}${trade.leg1?.side || 'N/A'} ${profitStr}{/${color}-fg}`;
     });
 
     this.tradesBox.setItems(items);

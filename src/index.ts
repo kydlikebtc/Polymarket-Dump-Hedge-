@@ -12,12 +12,11 @@ import { loadConfig } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { eventBus } from './utils/EventBus.js';
 import { getDatabase, closeDatabase } from './db/index.js';
-import {
+import type {
   PriceSnapshot,
   DumpSignal,
   TradeCycle,
   Order,
-  CycleStatus,
 } from './types/index.js';
 
 // 全局状态
@@ -68,78 +67,72 @@ function printBanner(): void {
  */
 function setupEventListeners(): void {
   // 价格更新
-  eventBus.on('price:update', (snapshot: PriceSnapshot) => {
+  eventBus.onEvent('price:update', (snapshot: PriceSnapshot) => {
     logger.debug(
-      `价格更新: UP=${snapshot.upPrice.toFixed(4)} DOWN=${snapshot.downPrice.toFixed(4)} ` +
-      `SUM=${(snapshot.upPrice + snapshot.downPrice).toFixed(4)}`
+      `价格更新: UP=${snapshot.upBestAsk.toFixed(4)} DOWN=${snapshot.downBestAsk.toFixed(4)} ` +
+      `SUM=${(snapshot.upBestAsk + snapshot.downBestAsk).toFixed(4)}`
     );
   });
 
   // 暴跌信号
-  eventBus.on('dump:detected', (signal: DumpSignal) => {
+  eventBus.onEvent('price:dump_detected', (signal: DumpSignal) => {
     logger.warn(
-      `🚨 暴跌检测! Side=${signal.side} 从 ${signal.startPrice.toFixed(4)} 跌至 ${signal.endPrice.toFixed(4)} ` +
-      `跌幅=${(signal.pctChange * 100).toFixed(2)}% 耗时=${signal.durationMs}ms`
+      `🚨 暴跌检测! Side=${signal.side} 从 ${signal.previousPrice.toFixed(4)} 跌至 ${signal.price.toFixed(4)} ` +
+      `跌幅=${(signal.dropPct * 100).toFixed(2)}%`
     );
-  });
-
-  // 状态变化
-  eventBus.on('state:change', (data: { from: CycleStatus; to: CycleStatus; cycleId: string }) => {
-    logger.info(`状态变化: ${data.from} → ${data.to} [Cycle: ${data.cycleId}]`);
   });
 
   // 订单事件
-  eventBus.on('order:submitted', (order: Order) => {
+  eventBus.onEvent('order:submitted', (order: Order) => {
     logger.info(
-      `订单提交: ${order.side} ${order.shares} shares @ ${order.price.toFixed(4)} ` +
-      `[${order.orderType}] ID=${order.orderId}`
+      `订单提交: ${order.side} ${order.shares} shares @ ${order.price?.toFixed(4) || 'MKT'} ` +
+      `[${order.orderType}] ID=${order.id}`
     );
   });
 
-  eventBus.on('order:filled', (order: Order) => {
+  eventBus.onEvent('order:filled', (order: Order) => {
     logger.info(
-      `✅ 订单成交: ${order.side} ${order.shares} @ ${order.fillPrice?.toFixed(4)} ` +
+      `✅ 订单成交: ${order.side} ${order.shares} @ ${order.avgFillPrice?.toFixed(4)} ` +
       `成本=$${order.totalCost?.toFixed(2)}`
     );
   });
 
-  eventBus.on('order:failed', (data: { order: Order; error: string }) => {
-    logger.error(`❌ 订单失败: ${data.order.orderId} - ${data.error}`);
+  eventBus.onEvent('order:error', (data: { order: Order; error: Error }) => {
+    logger.error(`❌ 订单失败: ${data.order.id} - ${data.error.message}`);
   });
 
   // 交易周期事件
-  eventBus.on('cycle:completed', (cycle: TradeCycle) => {
+  eventBus.onEvent('cycle:completed', ({ cycle, profit }: { cycle: TradeCycle; profit: number }) => {
     logger.info(
-      `🎉 交易周期完成! ID=${cycle.id} 净利润=$${cycle.netProfit?.toFixed(2)} ` +
-      `Leg1=${cycle.leg1Price?.toFixed(4)} Leg2=${cycle.leg2Price?.toFixed(4)}`
+      `🎉 交易周期完成! ID=${cycle.id} 净利润=$${profit.toFixed(2)} ` +
+      `Leg1=${cycle.leg1?.entryPrice.toFixed(4)} Leg2=${cycle.leg2?.entryPrice.toFixed(4)}`
     );
   });
 
   // 回合事件
-  eventBus.on('round:new', (data: { roundId: string; endTime: number }) => {
-    const remaining = Math.floor((data.endTime - Date.now()) / 1000);
-    logger.info(`📅 新回合开始: ${data.roundId} 剩余 ${remaining} 秒`);
+  eventBus.onEvent('round:new', (data: { roundSlug: string; startTime: number }) => {
+    logger.info(`📅 新回合开始: ${data.roundSlug}`);
   });
 
-  eventBus.on('round:expired', (roundId: string) => {
-    logger.warn(`⏰ 回合过期: ${roundId}`);
+  eventBus.onEvent('round:expired', () => {
+    logger.warn(`⏰ 回合过期`);
   });
 
   // 错误事件
-  eventBus.on('error', (error: Error) => {
+  eventBus.onEvent('system:error', (error: Error) => {
     logger.error(`系统错误: ${error.message}`, { stack: error.stack });
   });
 
   // WebSocket 事件
-  eventBus.on('ws:connected', () => {
+  eventBus.onEvent('ws:connected', () => {
     logger.info('📡 WebSocket 已连接');
   });
 
-  eventBus.on('ws:disconnected', () => {
+  eventBus.onEvent('ws:disconnected', () => {
     logger.warn('📡 WebSocket 断开连接');
   });
 
-  eventBus.on('ws:reconnecting', (attempt: number) => {
+  eventBus.onEvent('ws:reconnecting', ({ attempt }) => {
     logger.info(`📡 WebSocket 重连中... 尝试 #${attempt}`);
   });
 }
@@ -182,22 +175,26 @@ async function gracefulShutdown(signal: string): Promise<void> {
 function printStatusSummary(): void {
   if (!engine) return;
 
-  const status = engine.getStatus();
+  const isRunning = engine.isEngineRunning();
+  const currentState = engine.getStateMachine().getCurrentStatus();
+  const currentCycle = engine.getStateMachine().getCurrentCycle();
+  const currentRound = engine.getRoundManager().getCurrentRoundSlug();
+  const latestPrice = engine.getMarketWatcher().getLatestPrice();
 
   console.log('\n───────────────────────────────────────');
   console.log('              当前状态');
   console.log('───────────────────────────────────────');
-  console.log(`运行状态: ${status.isRunning ? '运行中 ✅' : '已停止 ❌'}`);
-  console.log(`当前状态: ${status.currentState}`);
-  console.log(`当前回合: ${status.currentRound || 'N/A'}`);
+  console.log(`运行状态: ${isRunning ? '运行中 ✅' : '已停止 ❌'}`);
+  console.log(`当前状态: ${currentState}`);
+  console.log(`当前回合: ${currentRound || 'N/A'}`);
 
-  if (status.currentPrice) {
-    console.log(`当前价格: UP=${status.currentPrice.up.toFixed(4)} DOWN=${status.currentPrice.down.toFixed(4)}`);
-    console.log(`价格和: ${(status.currentPrice.up + status.currentPrice.down).toFixed(4)}`);
+  if (latestPrice) {
+    console.log(`当前价格: UP=${latestPrice.upBestAsk.toFixed(4)} DOWN=${latestPrice.downBestAsk.toFixed(4)}`);
+    console.log(`价格和: ${(latestPrice.upBestAsk + latestPrice.downBestAsk).toFixed(4)}`);
   }
 
-  if (status.activeCycle) {
-    console.log(`活跃周期: ${status.activeCycle}`);
+  if (currentCycle) {
+    console.log(`活跃周期: ${currentCycle.id}`);
   }
 
   console.log('───────────────────────────────────────\n');
@@ -231,7 +228,7 @@ async function main(): Promise<void> {
 
   // 初始化数据库
   logger.info('初始化数据库...');
-  const db = getDatabase(config.dbPath);
+  getDatabase();
   logger.info('数据库初始化完成');
 
   // 设置事件监听

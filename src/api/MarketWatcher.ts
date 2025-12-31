@@ -153,8 +153,8 @@ export class MarketWatcher {
         secondsRemaining: data.seconds_remaining as number || 0,
         upTokenId: data.up_token_id as string || '',
         downTokenId: data.down_token_id as string || '',
-        upBestAsk: this.parsePrice(data.up_best_ask || data.asks?.[0]?.[0]),
-        upBestBid: this.parsePrice(data.up_best_bid || data.bids?.[0]?.[0]),
+        upBestAsk: this.parsePrice(data.up_best_ask || (data.asks as unknown[])?.[0]),
+        upBestBid: this.parsePrice(data.up_best_bid || (data.bids as unknown[])?.[0]),
         downBestAsk: this.parsePrice(data.down_best_ask),
         downBestBid: this.parsePrice(data.down_best_bid),
       };
@@ -377,7 +377,7 @@ export class MarketWatcher {
    * 获取最近的价格数据
    */
   getRecentPrices(milliseconds: number): PriceSnapshot[] {
-    return this.priceBuffer.getRecent<PriceSnapshot>(milliseconds);
+    return this.priceBuffer.getRecent(milliseconds);
   }
 
   /**

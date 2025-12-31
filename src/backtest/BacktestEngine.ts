@@ -206,7 +206,7 @@ export class BacktestEngine {
    * 检测暴跌
    */
   private detectDump(roundSlug: string): DumpSignal | null {
-    const now = Date.now();
+    // Note: using buffer timestamp instead of Date.now() for accurate backtest simulation
 
     // 检查是否在监控窗口内
     const elapsedMs = this.priceBuffer.peekLast()?.timestamp
@@ -218,7 +218,7 @@ export class BacktestEngine {
     }
 
     // 获取窗口内价格
-    const windowPrices = this.priceBuffer.getRecent<PriceSnapshot>(
+    const windowPrices = this.priceBuffer.getRecent(
       this.DETECTION_WINDOW_SECONDS * 1000
     );
 

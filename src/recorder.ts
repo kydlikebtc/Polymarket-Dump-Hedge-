@@ -69,7 +69,7 @@ function handlePriceSnapshot(snapshot: PriceSnapshot): void {
     logger.info(
       `📊 录制统计: 总计 ${snapshotCount} 条 | ` +
       `缓冲 ${batchBuffer.length} 条 | ` +
-      `当前 UP=${snapshot.upPrice.toFixed(4)} DOWN=${snapshot.downPrice.toFixed(4)}`
+      `当前 UP=${snapshot.upBestAsk.toFixed(4)} DOWN=${snapshot.downBestAsk.toFixed(4)}`
     );
     lastLogTime = now;
   }
@@ -82,7 +82,7 @@ function flushBatch(): void {
   if (!db || batchBuffer.length === 0) return;
 
   try {
-    db.insertPriceSnapshots(batchBuffer);
+    db.savePriceSnapshotsBatch(batchBuffer);
     logger.debug(`批量写入 ${batchBuffer.length} 条快照`);
     batchBuffer = [];
   } catch (error) {
@@ -106,7 +106,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
     // 停止 WebSocket
     if (watcher) {
       logger.info('停止 WebSocket 连接...');
-      watcher.stop();
+      watcher.disconnect();
       watcher = null;
     }
 
@@ -143,32 +143,31 @@ async function main(): Promise<void> {
   // 加载配置
   const config = loadConfig();
   logger.info(`配置加载完成`);
-  logger.info(`UP Token: ${config.tokenIdUp}`);
-  logger.info(`DOWN Token: ${config.tokenIdDown}`);
+  logger.info(`WebSocket URL: ${config.wsUrl}`);
 
   // 初始化数据库
   logger.info('初始化数据库...');
-  db = getDatabase(config.dbPath);
-  logger.info(`数据库路径: ${config.dbPath}`);
+  db = getDatabase();
+  logger.info(`数据库初始化完成`);
 
   // 设置事件监听
-  eventBus.on('price:update', handlePriceSnapshot);
+  eventBus.onEvent('price:update', handlePriceSnapshot);
 
-  eventBus.on('ws:connected', () => {
+  eventBus.onEvent('ws:connected', () => {
     logger.info('📡 WebSocket 已连接');
   });
 
-  eventBus.on('ws:disconnected', () => {
+  eventBus.onEvent('ws:disconnected', () => {
     logger.warn('📡 WebSocket 断开连接');
     // 刷新缓冲，防止数据丢失
     flushBatch();
   });
 
-  eventBus.on('ws:reconnecting', (attempt: number) => {
+  eventBus.onEvent('ws:reconnecting', ({ attempt }) => {
     logger.info(`📡 WebSocket 重连中... 尝试 #${attempt}`);
   });
 
-  eventBus.on('ws:error', (error: Error) => {
+  eventBus.onEvent('ws:error', (error: Error) => {
     logger.error(`WebSocket 错误: ${error.message}`);
   });
 
@@ -182,14 +181,9 @@ async function main(): Promise<void> {
 
   // 创建并启动 MarketWatcher
   logger.info('启动 WebSocket 连接...');
-  watcher = new MarketWatcher(
-    config.wsUrl,
-    config.tokenIdUp,
-    config.tokenIdDown,
-    config.windowMs
-  );
+  watcher = new MarketWatcher(config);
 
-  await watcher.start();
+  await watcher.connect();
 
   // 定期刷新缓冲
   setInterval(() => {

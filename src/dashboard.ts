@@ -86,7 +86,7 @@ async function main(): Promise<void> {
   }
 
   // 初始化数据库
-  getDatabase(config.dbPath);
+  getDatabase();
 
   // 创建 Dashboard
   dashboard = new Dashboard();

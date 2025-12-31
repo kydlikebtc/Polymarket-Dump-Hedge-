@@ -8,7 +8,6 @@ import { eventBus } from '../utils/EventBus.js';
 import type { PriceSnapshot, MarketInfo } from '../types/index.js';
 
 // BTC 15分钟轮次配置
-const ROUND_DURATION_MS = 15 * 60 * 1000; // 15分钟
 const ROUND_WARNING_THRESHOLD = 60; // 剩余60秒时发出警告
 
 export class RoundManager {

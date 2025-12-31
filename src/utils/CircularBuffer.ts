@@ -148,25 +148,25 @@ export class CircularBuffer<T> {
    * 获取满足时间范围的元素
    * 假设元素有 timestamp 属性
    */
-  getInTimeRange<K extends T & { timestamp: number }>(
+  getInTimeRange(
     startTime: number,
     endTime: number = Date.now()
-  ): K[] {
+  ): T[] {
     return this.filter((item) => {
       const timestampedItem = item as unknown as { timestamp: number };
       return (
         timestampedItem.timestamp >= startTime &&
         timestampedItem.timestamp <= endTime
       );
-    }) as K[];
+    });
   }
 
   /**
    * 获取最近 n 毫秒内的元素
    */
-  getRecent<K extends T & { timestamp: number }>(milliseconds: number): K[] {
+  getRecent(milliseconds: number): T[] {
     const startTime = Date.now() - milliseconds;
-    return this.getInTimeRange<K>(startTime);
+    return this.getInTimeRange(startTime);
   }
 
   /**

@@ -12,7 +12,6 @@ import { loadConfig } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { BacktestConfig, BacktestResult } from './types/index.js';
 import * as fs from 'fs';
-import * as path from 'path';
 
 interface CliArgs {
   start?: string;
@@ -97,42 +96,42 @@ Polymarket Dump & Hedge 回测工具
  * 格式化回测结果为文本
  */
 function formatResultText(result: BacktestResult): string {
+  const { metrics, config } = result;
   const lines: string[] = [
     '═══════════════════════════════════════════════════════════════',
     '                    回测结果报告',
     '═══════════════════════════════════════════════════════════════',
     '',
-    `时间范围: ${new Date(result.startTime).toISOString()} ~ ${new Date(result.endTime).toISOString()}`,
-    `初始资金: $${result.initialEquity.toFixed(2)}`,
-    `最终资金: $${result.finalEquity.toFixed(2)}`,
+    `时间范围: ${new Date(config.startTime).toISOString()} ~ ${new Date(config.endTime).toISOString()}`,
+    `初始资金: $${config.initialCapital.toFixed(2)}`,
+    `最终资金: $${metrics.finalEquity.toFixed(2)}`,
     '',
     '───────────────────────────────────────────────────────────────',
     '                    交易统计',
     '───────────────────────────────────────────────────────────────',
-    `总交易次数: ${result.totalTrades}`,
-    `盈利交易: ${result.winningTrades}`,
-    `亏损交易: ${result.losingTrades}`,
-    `胜率: ${(result.winRate * 100).toFixed(2)}%`,
+    `总交易次数: ${metrics.totalTrades}`,
+    `盈利交易: ${metrics.winningTrades}`,
+    `亏损交易: ${metrics.losingTrades}`,
+    `胜率: ${(metrics.winRate * 100).toFixed(2)}%`,
     '',
     '───────────────────────────────────────────────────────────────',
     '                    收益指标',
     '───────────────────────────────────────────────────────────────',
-    `总收益: $${result.totalProfit.toFixed(2)}`,
-    `总收益率: ${(result.totalReturn * 100).toFixed(2)}%`,
-    `最大回撤: ${(result.maxDrawdown * 100).toFixed(2)}%`,
-    `夏普比率: ${result.sharpeRatio.toFixed(4)}`,
-    `盈亏比: ${result.profitFactor.toFixed(4)}`,
+    `总收益: $${metrics.netProfit.toFixed(2)}`,
+    `总收益率: ${(metrics.returnPct * 100).toFixed(2)}%`,
+    `最大回撤: ${(metrics.maxDrawdown * 100).toFixed(2)}%`,
+    `夏普比率: ${metrics.sharpeRatio.toFixed(4)}`,
+    `盈亏比: ${metrics.profitFactor.toFixed(4)}`,
     '',
     '───────────────────────────────────────────────────────────────',
     '                    回测配置',
     '───────────────────────────────────────────────────────────────',
-    `暴跌阈值: ${(result.config.movePct * 100).toFixed(1)}%`,
-    `检测窗口: ${result.config.windowMs}ms`,
-    `对冲目标: ${result.config.sumTarget}`,
-    `初始资金: $${result.config.initialEquity}`,
-    `每笔仓位: $${result.config.positionSize}`,
-    `滑点: ${(result.config.slippage * 100).toFixed(2)}%`,
-    `手续费率: ${(result.config.feeRate * 100).toFixed(3)}%`,
+    `暴跌阈值: ${(config.movePct * 100).toFixed(1)}%`,
+    `检测窗口: ${config.windowMin} 分钟`,
+    `对冲目标: ${config.sumTarget}`,
+    `初始资金: $${config.initialCapital}`,
+    `每笔份数: ${config.shares}`,
+    `手续费率: ${(config.feeRate * 100).toFixed(3)}%`,
     '',
     '═══════════════════════════════════════════════════════════════',
   ];
@@ -144,33 +143,33 @@ function formatResultText(result: BacktestResult): string {
  * 格式化回测结果为 CSV
  */
 function formatResultCsv(result: BacktestResult): string {
+  const { metrics, config } = result;
   const headers = [
-    'start_time', 'end_time', 'initial_equity', 'final_equity',
+    'start_time', 'end_time', 'initial_capital', 'final_equity',
     'total_trades', 'winning_trades', 'losing_trades', 'win_rate',
-    'total_profit', 'total_return', 'max_drawdown', 'sharpe_ratio', 'profit_factor',
-    'move_pct', 'window_ms', 'sum_target', 'position_size', 'slippage', 'fee_rate'
+    'net_profit', 'return_pct', 'max_drawdown', 'sharpe_ratio', 'profit_factor',
+    'move_pct', 'window_min', 'sum_target', 'shares', 'fee_rate'
   ];
 
   const values = [
-    result.startTime,
-    result.endTime,
-    result.initialEquity,
-    result.finalEquity,
-    result.totalTrades,
-    result.winningTrades,
-    result.losingTrades,
-    result.winRate,
-    result.totalProfit,
-    result.totalReturn,
-    result.maxDrawdown,
-    result.sharpeRatio,
-    result.profitFactor,
-    result.config.movePct,
-    result.config.windowMs,
-    result.config.sumTarget,
-    result.config.positionSize,
-    result.config.slippage,
-    result.config.feeRate
+    config.startTime,
+    config.endTime,
+    config.initialCapital,
+    metrics.finalEquity,
+    metrics.totalTrades,
+    metrics.winningTrades,
+    metrics.losingTrades,
+    metrics.winRate,
+    metrics.netProfit,
+    metrics.returnPct,
+    metrics.maxDrawdown,
+    metrics.sharpeRatio,
+    metrics.profitFactor,
+    config.movePct,
+    config.windowMin,
+    config.sumTarget,
+    config.shares,
+    config.feeRate
   ];
 
   return headers.join(',') + '\n' + values.join(',');
@@ -185,7 +184,6 @@ interface OptimizationResult {
 }
 
 async function runOptimization(
-  engine: BacktestEngine,
   baseConfig: BacktestConfig,
   paramGrid: Map<string, number[]>
 ): Promise<OptimizationResult[]> {
@@ -231,14 +229,16 @@ async function runOptimization(
     }
 
     try {
-      const result = await engine.run(config);
+      const engine = new BacktestEngine(config);
+      engine.loadData();
+      const result = engine.run();
       results.push({ params, result });
 
       completed++;
       logger.info(
         `[${completed}/${totalCombinations}] 参数: ${JSON.stringify(params)} ` +
-        `收益率: ${(result.totalReturn * 100).toFixed(2)}% ` +
-        `夏普: ${result.sharpeRatio.toFixed(4)}`
+        `收益率: ${(result.metrics.returnPct * 100).toFixed(2)}% ` +
+        `夏普: ${result.metrics.sharpeRatio.toFixed(4)}`
       );
     } catch (error) {
       logger.error(`参数组合失败: ${JSON.stringify(params)}`, error);
@@ -246,7 +246,7 @@ async function runOptimization(
   }
 
   // 按夏普比率排序
-  results.sort((a, b) => b.result.sharpeRatio - a.result.sharpeRatio);
+  results.sort((a, b) => b.result.metrics.sharpeRatio - a.result.metrics.sharpeRatio);
 
   return results;
 }
@@ -265,13 +265,13 @@ function printOptimizationResults(results: OptimizationResult[]): void {
   console.log('───────────────────────────────────────────────────────────────');
 
   top10.forEach((item, index) => {
-    const r = item.result;
+    const m = item.result.metrics;
     console.log(
       `#${index + 1}\t` +
-      `${r.sharpeRatio.toFixed(4)}\t\t` +
-      `${(r.totalReturn * 100).toFixed(2)}%\t\t` +
-      `${(r.winRate * 100).toFixed(1)}%\t\t` +
-      `${(r.maxDrawdown * 100).toFixed(2)}%\t\t` +
+      `${m.sharpeRatio.toFixed(4)}\t\t` +
+      `${(m.returnPct * 100).toFixed(2)}%\t\t` +
+      `${(m.winRate * 100).toFixed(1)}%\t\t` +
+      `${(m.maxDrawdown * 100).toFixed(2)}%\t\t` +
       `${JSON.stringify(item.params)}`
     );
   });
@@ -298,23 +298,19 @@ async function main(): Promise<void> {
     startTime: args.start ? new Date(args.start).getTime() : Date.now() - 30 * 24 * 60 * 60 * 1000,
     endTime: args.end ? new Date(args.end).getTime() : Date.now(),
     movePct: botConfig.movePct,
-    windowMs: botConfig.windowMs,
+    windowMin: botConfig.windowMin,
     sumTarget: botConfig.sumTarget,
-    initialEquity: 10000,
-    positionSize: botConfig.maxOrderUsdc,
-    slippage: 0.001, // 0.1%
-    feeRate: 0.002,  // 0.2%
+    shares: botConfig.shares,
+    initialCapital: 10000,
+    feeRate: botConfig.feeRate,
   };
 
   logger.info(`回测时间范围: ${new Date(baseConfig.startTime).toISOString()} ~ ${new Date(baseConfig.endTime).toISOString()}`);
 
-  // 创建回测引擎
-  const engine = new BacktestEngine(botConfig.dbPath);
-
   try {
     if (args.optimize && args.params && args.params.size > 0) {
       // 参数优化模式
-      const results = await runOptimization(engine, baseConfig, args.params);
+      const results = await runOptimization(baseConfig, args.params);
       printOptimizationResults(results);
 
       // 保存结果
@@ -328,7 +324,9 @@ async function main(): Promise<void> {
       }
     } else {
       // 单次回测模式
-      const result = await engine.run(baseConfig);
+      const engine = new BacktestEngine(baseConfig);
+      engine.loadData();
+      const result = engine.run();
 
       // 输出结果
       let output: string;
@@ -373,8 +371,6 @@ async function main(): Promise<void> {
   } catch (error) {
     logger.error('回测执行失败', error);
     process.exit(1);
-  } finally {
-    engine.close();
   }
 
   logger.info('回测完成');

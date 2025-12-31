@@ -47,7 +47,6 @@ export class PolymarketClient {
   private config: BotConfig;
   private httpClient: AxiosInstance;
   private wallet: ethers.Wallet | null = null;
-  private signer: ethers.Signer | null = null;
 
   constructor(config: BotConfig) {
     this.config = config;
@@ -112,7 +111,6 @@ export class PolymarketClient {
   private initWallet(privateKey: string): void {
     try {
       this.wallet = new ethers.Wallet(privateKey);
-      this.signer = this.wallet;
       logger.info('Wallet initialized', { address: this.wallet.address });
     } catch (error) {
       logger.error('Failed to initialize wallet', { error });

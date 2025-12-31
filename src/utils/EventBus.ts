@@ -3,7 +3,7 @@
  * 基于 EventEmitter3 的类型安全事件系统
  */
 
-import EventEmitter from 'eventemitter3';
+import { EventEmitter } from 'eventemitter3';
 import type { BotEvents } from '../types/index.js';
 import { logger } from './logger.js';
 
@@ -30,10 +30,10 @@ class TypedEventBus extends EventEmitter {
     if (this.debugMode) {
       logger.debug(`Event emitted: ${String(event)}`, {
         data: args[0],
-        listenerCount: this.listenerCount(event),
+        listenerCount: this.listenerCount(event as string),
       });
     }
-    return this.emit(event, ...args);
+    return this.emit(event as string, ...args);
   }
 
   /**
@@ -43,8 +43,7 @@ class TypedEventBus extends EventEmitter {
     event: K,
     callback: EventCallback<BotEvents[K]>
   ): this {
-    // @ts-expect-error - EventEmitter3 类型限制
-    return this.on(event, callback);
+    return this.on(event as string, callback as (...args: unknown[]) => void);
   }
 
   /**
@@ -54,8 +53,7 @@ class TypedEventBus extends EventEmitter {
     event: K,
     callback: EventCallback<BotEvents[K]>
   ): this {
-    // @ts-expect-error - EventEmitter3 类型限制
-    return this.once(event, callback);
+    return this.once(event as string, callback as (...args: unknown[]) => void);
   }
 
   /**
@@ -65,8 +63,7 @@ class TypedEventBus extends EventEmitter {
     event: K,
     callback?: EventCallback<BotEvents[K]>
   ): this {
-    // @ts-expect-error - EventEmitter3 类型限制
-    return this.off(event, callback);
+    return this.off(event as string, callback as ((...args: unknown[]) => void) | undefined);
   }
 
   /**
@@ -117,7 +114,7 @@ class TypedEventBus extends EventEmitter {
    */
   getListenerStats(): Record<string, number> {
     const stats: Record<string, number> = {};
-    const eventNames = this.eventNames();
+    const eventNames = this.eventNames() as string[];
     for (const event of eventNames) {
       stats[String(event)] = this.listenerCount(event);
     }

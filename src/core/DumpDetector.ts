@@ -64,8 +64,7 @@ export class DumpDetector {
     }
 
     // 获取检测窗口内的价格数据
-    const windowStart = now - this.windowSeconds * 1000;
-    const windowPrices = priceBuffer.getRecent<PriceSnapshot>(this.windowSeconds * 1000);
+    const windowPrices = priceBuffer.getRecent(this.windowSeconds * 1000);
 
     if (windowPrices.length < 2) {
       logger.debug('Not enough price data for detection', { count: windowPrices.length });
@@ -206,7 +205,7 @@ export class DumpDetector {
     up: number;
     down: number;
   } {
-    const windowPrices = priceBuffer.getRecent<PriceSnapshot>(this.windowSeconds * 1000);
+    const windowPrices = priceBuffer.getRecent(this.windowSeconds * 1000);
 
     if (windowPrices.length < 2) {
       return { up: 0, down: 0 };
