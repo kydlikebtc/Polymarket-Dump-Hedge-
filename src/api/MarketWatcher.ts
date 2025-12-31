@@ -119,26 +119,100 @@ export class MarketWatcher {
 
   /**
    * 处理接收的消息
+   * 包含完整的消息验证以防止恶意或畸形消息导致崩溃
    */
   private handleMessage(data: WebSocket.RawData): void {
-    try {
-      const message = JSON.parse(data.toString());
-      this.lastHeartbeat = Date.now();
-
-      // 根据消息类型处理
-      if (message.type === 'price_update' || message.event === 'book') {
-        this.handlePriceUpdate(message);
-      } else if (message.type === 'market_info') {
-        this.handleMarketInfo(message);
-      } else if (message.type === 'error') {
-        logger.error('Server error message', { message });
-      } else {
-        logger.debug('Received unknown message type', { type: message.type });
-      }
-
-    } catch (error) {
-      logger.error('Failed to parse WebSocket message', { error, data: data.toString() });
+    // 步骤 1: 验证消息大小 (防止内存攻击)
+    const dataStr = data.toString();
+    const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
+    if (dataStr.length > MAX_MESSAGE_SIZE) {
+      logger.warn('Message too large, dropping', { size: dataStr.length, maxSize: MAX_MESSAGE_SIZE });
+      return;
     }
+
+    // 步骤 2: 解析 JSON
+    let message: Record<string, unknown>;
+    try {
+      message = JSON.parse(dataStr);
+    } catch (parseError) {
+      logger.error('Failed to parse WebSocket message as JSON', {
+        error: parseError instanceof Error ? parseError.message : String(parseError),
+        dataPreview: dataStr.substring(0, 200),
+      });
+      return;
+    }
+
+    // 步骤 3: 验证消息是对象
+    if (message === null || typeof message !== 'object' || Array.isArray(message)) {
+      logger.warn('Invalid message format: expected object', { type: typeof message });
+      return;
+    }
+
+    this.lastHeartbeat = Date.now();
+
+    // 步骤 4: 根据消息类型处理 (带类型验证)
+    const messageType = message.type ?? message.event;
+
+    if (messageType === 'price_update' || messageType === 'book') {
+      // 验证价格更新消息的必要字段
+      if (!this.validatePriceMessage(message)) {
+        logger.warn('Invalid price update message structure', {
+          hasMarket: 'market' in message || 'asset_id' in message,
+          hasBids: 'bids' in message,
+          hasAsks: 'asks' in message,
+        });
+        return;
+      }
+      this.handlePriceUpdate(message);
+    } else if (messageType === 'market_info') {
+      // 验证市场信息消息
+      if (!this.validateMarketInfoMessage(message)) {
+        logger.warn('Invalid market info message structure');
+        return;
+      }
+      this.handleMarketInfo(message);
+    } else if (messageType === 'error') {
+      // 服务端错误消息
+      logger.error('Server error message', {
+        errorCode: message.code,
+        errorMessage: message.message,
+      });
+    } else if (messageType === 'subscribed' || messageType === 'unsubscribed') {
+      // 订阅确认消息
+      logger.debug('Subscription status', { type: messageType, market: message.market });
+    } else if (messageType === 'pong' || messageType === 'heartbeat') {
+      // 心跳响应
+      logger.debug('Heartbeat received');
+    } else {
+      // 未知消息类型
+      logger.debug('Received unknown message type', {
+        type: messageType,
+        keys: Object.keys(message).slice(0, 10),
+      });
+    }
+  }
+
+  /**
+   * 验证价格更新消息结构
+   */
+  private validatePriceMessage(message: Record<string, unknown>): boolean {
+    // 必须有 market/asset_id 或 bids/asks
+    const hasMarketId = typeof message.market === 'string' || typeof message.asset_id === 'string';
+    const hasOrderbook = Array.isArray(message.bids) || Array.isArray(message.asks);
+    const hasPrices = typeof message.up_best_ask === 'number' ||
+                      typeof message.up_best_ask === 'string' ||
+                      typeof message.down_best_ask === 'number' ||
+                      typeof message.down_best_ask === 'string';
+
+    return hasMarketId || hasOrderbook || hasPrices;
+  }
+
+  /**
+   * 验证市场信息消息结构
+   */
+  private validateMarketInfoMessage(message: Record<string, unknown>): boolean {
+    // 必须有 slug
+    return typeof message.slug === 'string' && message.slug.length > 0;
   }
 
   /**

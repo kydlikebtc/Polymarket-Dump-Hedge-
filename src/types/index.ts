@@ -25,6 +25,11 @@ export interface BotConfig {
   privateKey: string;          // 私钥
   walletAddress: string;       // 钱包地址
 
+  // Builder API 配置 (可选，用于订单归因)
+  builderApiKey?: string;      // Builder API Key
+  builderSecret?: string;      // Builder Secret
+  builderPassphrase?: string;  // Builder Passphrase
+
   // 运行模式
   readOnly: boolean;           // 只读模式
   dryRun: boolean;             // 模拟模式
@@ -177,6 +182,9 @@ export interface BotEvents {
   'system:error': Error;
   'system:warning': string;
   'system:info': string;
+
+  // 告警事件
+  'alert:sent': Alert;
 }
 
 // ===== 回测类型 =====
@@ -239,4 +247,35 @@ export interface Alert {
   message: string;
   timestamp: number;
   data?: Record<string, unknown>;
+}
+
+// ===== 告警配置类型 =====
+
+export interface AlertChannelConfig {
+  console: boolean;
+  telegram?: {
+    botToken: string;
+    chatId: string;
+    enabled: boolean;
+  };
+  discord?: {
+    webhookUrl: string;
+    enabled: boolean;
+  };
+}
+
+export interface AlertConfig {
+  channels: AlertChannelConfig;
+  minSeverity: AlertSeverity;
+  throttle: {
+    enabled: boolean;
+    windowMs: number;
+    maxPerWindow: number;
+  };
+  quietHours?: {
+    enabled: boolean;
+    startHour: number;
+    endHour: number;
+    timezone: string;
+  };
 }

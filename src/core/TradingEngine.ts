@@ -5,6 +5,7 @@
 
 import { logger, logTrade } from '../utils/logger.js';
 import { eventBus } from '../utils/EventBus.js';
+import { getAlertManager, type AlertManager } from '../utils/AlertManager.js';
 import { MarketWatcher } from '../api/MarketWatcher.js';
 import { PolymarketClient } from '../api/PolymarketClient.js';
 import { StateMachine } from './StateMachine.js';
@@ -28,6 +29,7 @@ export class TradingEngine {
   private dumpDetector: DumpDetector;
   private hedgeStrategy: HedgeStrategy;
   private roundManager: RoundManager;
+  private alertManager: AlertManager;
   private isRunning: boolean = false;
   private isAutoMode: boolean = false;
   private detectionInterval: NodeJS.Timeout | null = null;
@@ -45,6 +47,7 @@ export class TradingEngine {
     this.dumpDetector = new DumpDetector(config);
     this.hedgeStrategy = new HedgeStrategy(config);
     this.roundManager = new RoundManager();
+    this.alertManager = getAlertManager();
 
     // 设置事件监听
     this.setupEventListeners();
@@ -77,6 +80,8 @@ export class TradingEngine {
     eventBus.onEvent('ws:disconnected', ({ code, reason }) => {
       logger.warn('WebSocket disconnected', { code, reason });
       this.stopDetection();
+      // 发送告警
+      this.alertManager.alertWebSocketDisconnected(code, reason);
     });
 
     // 价格更新事件
@@ -254,6 +259,9 @@ export class TradingEngine {
     // 通知状态机
     this.stateMachine.onDumpDetected(signal);
 
+    // 发送暴跌检测告警
+    this.alertManager.alertDumpDetected(signal);
+
     // 锁定检测方向
     this.dumpDetector.lockSide(signal.side);
 
@@ -281,12 +289,15 @@ export class TradingEngine {
           getDatabase().createTradeCycle(cycle);
         }
       } else {
-        throw new Error(`Leg 1 order failed: ${result.error || 'Unknown error'}`);
+        const errorMsg = `Leg 1 order failed: ${result.error || 'Unknown error'}`;
+        this.alertManager.alertOrderFailed(signal.side, errorMsg);
+        throw new Error(errorMsg);
       }
 
     } catch (error) {
       logger.error('Leg 1 execution failed', { error });
       this.stateMachine.onError(error as Error);
+      this.alertManager.alertSystemError(error as Error);
     }
   }
 
@@ -355,12 +366,15 @@ export class TradingEngine {
           getDatabase().updateTradeCycle(cycle);
         }
       } else {
-        throw new Error(`Leg 2 order failed: ${result.error || 'Unknown error'}`);
+        const errorMsg = `Leg 2 order failed: ${result.error || 'Unknown error'}`;
+        this.alertManager.alertOrderFailed(leg2Side, errorMsg);
+        throw new Error(errorMsg);
       }
 
     } catch (error) {
       logger.error('Leg 2 execution failed', { error });
       this.stateMachine.onError(error as Error);
+      this.alertManager.alertSystemError(error as Error);
     }
   }
 
@@ -403,11 +417,18 @@ export class TradingEngine {
   private onRoundExpired(): void {
     logger.info('Round expired');
 
+    // 检查是否有未对冲的 Leg1
+    const cycle = this.stateMachine.getCurrentCycle();
+    if (cycle && cycle.leg1 && !cycle.leg2) {
+      // 计算损失并发送告警
+      const loss = -(cycle.leg1.totalCost);
+      this.alertManager.alertRoundExpiredWithLoss(cycle, loss);
+    }
+
     // 通知状态机
     this.stateMachine.onRoundExpired();
 
     // 更新数据库
-    const cycle = this.stateMachine.getCurrentCycle();
     if (cycle) {
       getDatabase().updateTradeCycle(cycle);
     }
@@ -426,6 +447,11 @@ export class TradingEngine {
       leg1: cycle.leg1,
       leg2: cycle.leg2,
     });
+
+    // 发送交易完成告警
+    if (cycle.profit !== undefined) {
+      this.alertManager.alertTradeCompleted(cycle, cycle.profit);
+    }
 
     // 更新数据库
     getDatabase().updateTradeCycle(cycle);

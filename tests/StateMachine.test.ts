@@ -195,4 +195,203 @@ describe('StateMachine', () => {
       expect(history[2].to).toBe('LEG1_FILLED');
     });
   });
+
+  describe('超时机制', () => {
+    describe('超时配置', () => {
+      it('应该使用默认超时配置', () => {
+        const config = fsm.getTimeoutConfig();
+        expect(config.leg1PendingTimeout).toBe(30 * 1000);
+        expect(config.leg1FilledTimeout).toBe(120 * 1000);
+        expect(config.leg2PendingTimeout).toBe(30 * 1000);
+      });
+
+      it('应该支持自定义超时配置', () => {
+        const customFsm = new StateMachine({
+          leg1PendingTimeout: 10000,
+          leg1FilledTimeout: 60000,
+          leg2PendingTimeout: 15000,
+        });
+        const config = customFsm.getTimeoutConfig();
+        expect(config.leg1PendingTimeout).toBe(10000);
+        expect(config.leg1FilledTimeout).toBe(60000);
+        expect(config.leg2PendingTimeout).toBe(15000);
+      });
+
+      it('应该支持部分自定义配置', () => {
+        const customFsm = new StateMachine({
+          leg1PendingTimeout: 5000,
+        });
+        const config = customFsm.getTimeoutConfig();
+        expect(config.leg1PendingTimeout).toBe(5000);
+        expect(config.leg1FilledTimeout).toBe(120 * 1000); // 默认值
+        expect(config.leg2PendingTimeout).toBe(30 * 1000); // 默认值
+      });
+
+      it('应该能够更新超时配置', () => {
+        fsm.updateTimeoutConfig({ leg1PendingTimeout: 20000 });
+        const config = fsm.getTimeoutConfig();
+        expect(config.leg1PendingTimeout).toBe(20000);
+        expect(config.leg1FilledTimeout).toBe(120 * 1000); // 未修改
+      });
+    });
+
+    describe('checkTimeout()', () => {
+      it('无活跃周期时应返回无超时', () => {
+        const result = fsm.checkTimeout();
+        expect(result.isTimeout).toBe(false);
+        expect(result.status).toBeNull();
+        expect(result.action).toBe('none');
+      });
+
+      it('WATCHING 状态不检查超时', () => {
+        fsm.startNewCycle('test-round');
+        const result = fsm.checkTimeout();
+        expect(result.isTimeout).toBe(false);
+        expect(result.action).toBe('none');
+      });
+
+      it('LEG1_PENDING 超时应返回 cancel 动作', async () => {
+        const shortTimeoutFsm = new StateMachine({ leg1PendingTimeout: 50 });
+        shortTimeoutFsm.startNewCycle('test-round');
+        shortTimeoutFsm.transition('LEG1_PENDING', 'dump_detected');
+
+        // 等待超时
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        const result = shortTimeoutFsm.checkTimeout();
+        expect(result.isTimeout).toBe(true);
+        expect(result.status).toBe('LEG1_PENDING');
+        expect(result.action).toBe('cancel');
+        expect(result.elapsedMs).toBeGreaterThanOrEqual(50);
+      });
+
+      it('LEG1_FILLED 超时应返回 warn 动作', async () => {
+        const shortTimeoutFsm = new StateMachine({ leg1FilledTimeout: 50 });
+        shortTimeoutFsm.startNewCycle('test-round');
+        shortTimeoutFsm.transition('LEG1_PENDING', 'dump_detected');
+        shortTimeoutFsm.transition('LEG1_FILLED', 'order_filled');
+
+        // 等待超时
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        const result = shortTimeoutFsm.checkTimeout();
+        expect(result.isTimeout).toBe(true);
+        expect(result.status).toBe('LEG1_FILLED');
+        expect(result.action).toBe('warn');
+      });
+
+      it('LEG2_PENDING 超时应返回 cancel 动作', async () => {
+        const shortTimeoutFsm = new StateMachine({ leg2PendingTimeout: 50 });
+        shortTimeoutFsm.startNewCycle('test-round');
+        shortTimeoutFsm.transition('LEG1_PENDING', 'dump_detected');
+        shortTimeoutFsm.transition('LEG1_FILLED', 'order_filled');
+        shortTimeoutFsm.transition('LEG2_PENDING', 'hedge_started');
+
+        // 等待超时
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        const result = shortTimeoutFsm.checkTimeout();
+        expect(result.isTimeout).toBe(true);
+        expect(result.status).toBe('LEG2_PENDING');
+        expect(result.action).toBe('cancel');
+      });
+
+      it('未超时时应返回 none 动作', () => {
+        fsm.startNewCycle('test-round');
+        fsm.transition('LEG1_PENDING', 'dump_detected');
+
+        const result = fsm.checkTimeout();
+        expect(result.isTimeout).toBe(false);
+        expect(result.action).toBe('none');
+      });
+    });
+
+    describe('getLeg1UnhedgedDuration()', () => {
+      it('无活跃周期时应返回 0', () => {
+        expect(fsm.getLeg1UnhedgedDuration()).toBe(0);
+      });
+
+      it('非 LEG1_FILLED 状态应返回 0', () => {
+        fsm.startNewCycle('test-round');
+        expect(fsm.getLeg1UnhedgedDuration()).toBe(0);
+
+        fsm.transition('LEG1_PENDING', 'dump_detected');
+        expect(fsm.getLeg1UnhedgedDuration()).toBe(0);
+      });
+
+      it('LEG1_FILLED 状态应返回正确的持续时间', async () => {
+        fsm.startNewCycle('test-round');
+        fsm.transition('LEG1_PENDING', 'dump_detected');
+
+        // 模拟 Leg1 成交
+        fsm.onLeg1Filled({
+          orderId: 'test-order',
+          side: 'UP',
+          shares: 100,
+          avgPrice: 0.4,
+          totalCost: 40,
+          timestamp: Date.now(),
+        });
+
+        expect(fsm.getCurrentStatus()).toBe('LEG1_FILLED');
+
+        // 等待一小段时间
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        const duration = fsm.getLeg1UnhedgedDuration();
+        expect(duration).toBeGreaterThanOrEqual(50);
+        expect(duration).toBeLessThan(200); // 合理范围内
+      });
+    });
+
+    describe('shouldForceExpire()', () => {
+      it('无活跃周期时应返回 false', () => {
+        expect(fsm.shouldForceExpire(100)).toBe(false);
+      });
+
+      it('WATCHING 状态不应强制过期', () => {
+        fsm.startNewCycle('test-round');
+        expect(fsm.shouldForceExpire(5)).toBe(false);
+      });
+
+      it('LEG1_FILLED 状态且剩余时间 < 10 秒应强制过期', () => {
+        fsm.startNewCycle('test-round');
+        fsm.transition('LEG1_PENDING', 'dump_detected');
+        fsm.transition('LEG1_FILLED', 'order_filled');
+
+        expect(fsm.shouldForceExpire(9)).toBe(true);
+        expect(fsm.shouldForceExpire(10)).toBe(false);
+        expect(fsm.shouldForceExpire(100)).toBe(false);
+      });
+
+      it('LEG1_PENDING 状态且剩余时间 < 5 秒应强制过期', () => {
+        fsm.startNewCycle('test-round');
+        fsm.transition('LEG1_PENDING', 'dump_detected');
+
+        expect(fsm.shouldForceExpire(4)).toBe(true);
+        expect(fsm.shouldForceExpire(5)).toBe(false);
+        expect(fsm.shouldForceExpire(100)).toBe(false);
+      });
+
+      it('LEG2_PENDING 状态且剩余时间 < 5 秒应强制过期', () => {
+        fsm.startNewCycle('test-round');
+        fsm.transition('LEG1_PENDING', 'dump_detected');
+        fsm.transition('LEG1_FILLED', 'order_filled');
+        fsm.transition('LEG2_PENDING', 'hedge_started');
+
+        expect(fsm.shouldForceExpire(4)).toBe(true);
+        expect(fsm.shouldForceExpire(5)).toBe(false);
+      });
+
+      it('COMPLETED 状态不应强制过期', () => {
+        fsm.startNewCycle('test-round');
+        fsm.transition('LEG1_PENDING', 'dump_detected');
+        fsm.transition('LEG1_FILLED', 'order_filled');
+        fsm.transition('LEG2_PENDING', 'hedge_started');
+        fsm.transition('COMPLETED', 'hedge_filled');
+
+        expect(fsm.shouldForceExpire(1)).toBe(false);
+      });
+    });
+  });
 });

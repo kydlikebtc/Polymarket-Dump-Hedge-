@@ -8,10 +8,11 @@
  */
 
 import { TradingEngine } from './core/index.js';
-import { loadConfig } from './utils/config.js';
+import { loadConfig, loadAlertConfig } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { eventBus } from './utils/EventBus.js';
 import { getDatabase, closeDatabase } from './db/index.js';
+import { initAlertManager } from './utils/AlertManager.js';
 import type {
   PriceSnapshot,
   DumpSignal,
@@ -225,6 +226,12 @@ async function main(): Promise<void> {
   // 加载配置
   const config = loadConfig();
   logger.info(`配置加载完成: movePct=${config.movePct}, sumTarget=${config.sumTarget}`);
+
+  // 初始化告警管理器
+  logger.info('初始化告警管理器...');
+  const alertConfig = loadAlertConfig();
+  initAlertManager(alertConfig);
+  logger.info('告警管理器初始化完成');
 
   // 初始化数据库
   logger.info('初始化数据库...');

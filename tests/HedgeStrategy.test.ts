@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { HedgeStrategy } from '../src/core/HedgeStrategy.js';
+import { CircularBuffer } from '../src/utils/CircularBuffer.js';
 import { BotConfig, LegInfo, PriceSnapshot } from '../src/types/index.js';
 
 describe('HedgeStrategy', () => {
@@ -260,6 +261,167 @@ describe('HedgeStrategy', () => {
       // sum = 0.96
       expect(defaultStrategy.shouldHedge(0.5, 0.46)).toBe(false); // 0.96 > 0.95
       expect(looseStrategy.shouldHedge(0.5, 0.46)).toBe(true); // 0.96 <= 0.98
+    });
+  });
+
+  describe('predictHedgeProbability() - 对冲概率预判', () => {
+    // 创建测试用价格快照
+    function createPriceSnapshot(
+      timestamp: number,
+      upAsk: number,
+      downAsk: number,
+      upBid?: number,
+      downBid?: number
+    ): PriceSnapshot {
+      return {
+        timestamp,
+        roundSlug: 'test-round',
+        secondsRemaining: 600,
+        upTokenId: 'up-token',
+        downTokenId: 'down-token',
+        upBestAsk: upAsk,
+        upBestBid: upBid ?? upAsk - 0.01,
+        downBestAsk: downAsk,
+        downBestBid: downBid ?? downAsk - 0.01,
+      };
+    }
+
+    it('数据不足时应该返回低置信度结果', () => {
+      const buffer = new CircularBuffer<PriceSnapshot>(100);
+      // 只添加少量数据
+      buffer.push(createPriceSnapshot(Date.now(), 0.5, 0.5));
+      buffer.push(createPriceSnapshot(Date.now() + 100, 0.5, 0.5));
+
+      const result = strategy.predictHedgeProbability('UP', 0.4, buffer, 600);
+
+      expect(result.confidence).toBeLessThan(0.3);
+      expect(result.recommendation).toBe('wait');
+      expect(result.reason).toContain('数据不足');
+    });
+
+    it('已满足对冲条件时应该建议进入', () => {
+      const buffer = new CircularBuffer<PriceSnapshot>(100);
+      const now = Date.now();
+
+      // 添加足够的价格数据，对方价格已经低于目标
+      for (let i = 0; i < 20; i++) {
+        buffer.push(createPriceSnapshot(now - (20 - i) * 1000, 0.5, 0.5)); // DOWN @ 0.5
+      }
+
+      // Leg1 @ 0.4, maxLeg2 = 0.55, 当前 DOWN @ 0.5 <= 0.55
+      const result = strategy.predictHedgeProbability('UP', 0.4, buffer, 600);
+
+      expect(result.probability).toBeGreaterThan(0.8);
+      expect(result.recommendation).toBe('enter');
+    });
+
+    it('价格差距大且波动率低时应该建议跳过', () => {
+      const buffer = new CircularBuffer<PriceSnapshot>(100);
+      const now = Date.now();
+
+      // 添加稳定的高价格数据 (无波动)
+      for (let i = 0; i < 20; i++) {
+        buffer.push(createPriceSnapshot(now - (20 - i) * 1000, 0.5, 0.65)); // DOWN @ 0.65
+      }
+
+      // Leg1 @ 0.4, maxLeg2 = 0.55, 当前 DOWN @ 0.65 远超目标
+      const result = strategy.predictHedgeProbability('UP', 0.4, buffer, 600);
+
+      expect(result.probability).toBeLessThan(0.5);
+      expect(result.factors.priceVolatility).toBeLessThan(0.01);
+    });
+
+    it('时间不足时应该建议跳过', () => {
+      const buffer = new CircularBuffer<PriceSnapshot>(100);
+      const now = Date.now();
+
+      for (let i = 0; i < 20; i++) {
+        buffer.push(createPriceSnapshot(now - (20 - i) * 1000, 0.5, 0.6));
+      }
+
+      // 只剩 30 秒
+      const result = strategy.predictHedgeProbability('UP', 0.4, buffer, 30);
+
+      expect(result.recommendation).toBe('skip');
+      expect(result.reason).toContain('时间');
+    });
+
+    it('应该正确计算波动率因子', () => {
+      const buffer = new CircularBuffer<PriceSnapshot>(100);
+      const now = Date.now();
+
+      // 添加波动的价格数据
+      for (let i = 0; i < 20; i++) {
+        const volatilePrice = 0.55 + (i % 2 === 0 ? 0.02 : -0.02); // 在 0.53 和 0.57 之间波动
+        buffer.push(createPriceSnapshot(now - (20 - i) * 1000, 0.5, volatilePrice));
+      }
+
+      const result = strategy.predictHedgeProbability('UP', 0.4, buffer, 600);
+
+      expect(result.factors.priceVolatility).toBeGreaterThan(0);
+    });
+
+    it('应该正确计算趋势因子', () => {
+      const buffer = new CircularBuffer<PriceSnapshot>(100);
+      const now = Date.now();
+
+      // 添加下跌趋势的价格数据
+      for (let i = 0; i < 20; i++) {
+        const decliningPrice = 0.6 - i * 0.005; // 从 0.6 下跌到 0.505
+        buffer.push(createPriceSnapshot(now - (20 - i) * 1000, 0.5, decliningPrice));
+      }
+
+      const result = strategy.predictHedgeProbability('UP', 0.4, buffer, 600);
+
+      // 下跌趋势 (负值) 有利于对冲
+      expect(result.factors.trendDirection).toBeLessThan(0);
+    });
+
+    it('应该返回完整的预判结果结构', () => {
+      const buffer = new CircularBuffer<PriceSnapshot>(100);
+      const now = Date.now();
+
+      for (let i = 0; i < 20; i++) {
+        buffer.push(createPriceSnapshot(now - (20 - i) * 1000, 0.5, 0.55));
+      }
+
+      const result = strategy.predictHedgeProbability('UP', 0.4, buffer, 600);
+
+      // 验证返回结构
+      expect(result).toHaveProperty('probability');
+      expect(result).toHaveProperty('confidence');
+      expect(result).toHaveProperty('expectedTimeToHedge');
+      expect(result).toHaveProperty('recommendation');
+      expect(result).toHaveProperty('factors');
+      expect(result).toHaveProperty('reason');
+
+      // 验证因子结构
+      expect(result.factors).toHaveProperty('priceVolatility');
+      expect(result.factors).toHaveProperty('trendDirection');
+      expect(result.factors).toHaveProperty('spreadHealth');
+      expect(result.factors).toHaveProperty('timeRemaining');
+
+      // 验证值范围
+      expect(result.probability).toBeGreaterThanOrEqual(0);
+      expect(result.probability).toBeLessThanOrEqual(1);
+      expect(result.confidence).toBeGreaterThanOrEqual(0);
+      expect(result.confidence).toBeLessThanOrEqual(1);
+      expect(['enter', 'wait', 'skip']).toContain(result.recommendation);
+    });
+
+    it('DOWN 方向的预判应该分析 UP 价格', () => {
+      const buffer = new CircularBuffer<PriceSnapshot>(100);
+      const now = Date.now();
+
+      // UP 价格低 (有利于 DOWN 方向对冲)
+      for (let i = 0; i < 20; i++) {
+        buffer.push(createPriceSnapshot(now - (20 - i) * 1000, 0.5, 0.6)); // UP @ 0.5
+      }
+
+      // Leg1 买 DOWN @ 0.4, maxLeg2 (UP) = 0.55, 当前 UP @ 0.5 <= 0.55
+      const result = strategy.predictHedgeProbability('DOWN', 0.4, buffer, 600);
+
+      expect(result.probability).toBeGreaterThan(0.7);
     });
   });
 });

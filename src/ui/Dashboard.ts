@@ -2,17 +2,25 @@
  * 终端 Dashboard UI
  *
  * 使用 blessed 库实现交互式终端界面
+ * 支持：
+ * - 实时价格监控
+ * - 手动交易（买入 UP/DOWN）
+ * - 运行时参数调整
+ * - 交易记录查看
  */
 
 import * as blessed from 'blessed';
 import { TradingEngine } from '../core/index.js';
 import { eventBus } from '../utils/EventBus.js';
+import { logger } from '../utils/logger.js';
+import { getAlertManager, type AlertManager, type Alert } from '../utils/AlertManager.js';
 import type {
   PriceSnapshot,
   DumpSignal,
   TradeCycle,
   Order,
   CycleStatus,
+  Side,
 } from '../types/index.js';
 
 export class Dashboard {
@@ -20,14 +28,18 @@ export class Dashboard {
   private headerBox: blessed.Widgets.BoxElement;
   private priceBox: blessed.Widgets.BoxElement;
   private statusBox: blessed.Widgets.BoxElement;
+  private alertBox: blessed.Widgets.BoxElement;
   private logBox: blessed.Widgets.Log;
   private tradesBox: blessed.Widgets.ListElement;
   private helpBox: blessed.Widgets.BoxElement;
 
   private engine: TradingEngine | null = null;
+  private alertManager: AlertManager;
   private recentTrades: TradeCycle[] = [];
+  private recentAlerts: Alert[] = [];
   private priceHistory: PriceSnapshot[] = [];
   private maxPriceHistory = 60; // 保留60个价格点用于绘图
+  private maxRecentAlerts = 10; // 最多显示10条告警
 
   constructor() {
     // 创建屏幕
@@ -37,10 +49,14 @@ export class Dashboard {
       fullUnicode: true,
     });
 
+    // 获取 AlertManager 实例
+    this.alertManager = getAlertManager();
+
     // 创建布局
     this.headerBox = this.createHeaderBox();
     this.priceBox = this.createPriceBox();
     this.statusBox = this.createStatusBox();
+    this.alertBox = this.createAlertBox();
     this.logBox = this.createLogBox();
     this.tradesBox = this.createTradesBox();
     this.helpBox = this.createHelpBox();
@@ -49,6 +65,7 @@ export class Dashboard {
     this.screen.append(this.headerBox);
     this.screen.append(this.priceBox);
     this.screen.append(this.statusBox);
+    this.screen.append(this.alertBox);
     this.screen.append(this.logBox);
     this.screen.append(this.tradesBox);
     this.screen.append(this.helpBox);
@@ -109,7 +126,7 @@ export class Dashboard {
     return blessed.box({
       top: 3,
       left: '50%',
-      width: '50%',
+      width: '25%',
       height: 10,
       label: ' ⚙️ 系统状态 ',
       tags: true,
@@ -122,6 +139,31 @@ export class Dashboard {
           fg: 'cyan',
         },
       },
+    });
+  }
+
+  /**
+   * 创建告警显示区域
+   */
+  private createAlertBox(): blessed.Widgets.BoxElement {
+    return blessed.box({
+      top: 3,
+      left: '75%',
+      width: '25%',
+      height: 10,
+      label: ' 🔔 告警 ',
+      tags: true,
+      border: {
+        type: 'line',
+      },
+      style: {
+        fg: 'white',
+        border: {
+          fg: 'magenta',
+        },
+      },
+      scrollable: true,
+      mouse: true,
     });
   }
 
@@ -196,7 +238,7 @@ export class Dashboard {
       width: '100%',
       height: 3,
       tags: true,
-      content: ' {cyan-fg}q{/cyan-fg}:退出 | {cyan-fg}s{/cyan-fg}:开始/停止 | {cyan-fg}m{/cyan-fg}:手动买入 | {cyan-fg}r{/cyan-fg}:刷新 | {cyan-fg}c{/cyan-fg}:清除日志 ',
+      content: ' {cyan-fg}q{/cyan-fg}:退出 | {cyan-fg}s{/cyan-fg}:开始/停止 | {cyan-fg}u{/cyan-fg}:买UP | {cyan-fg}d{/cyan-fg}:买DOWN | {cyan-fg}p{/cyan-fg}:参数 | {cyan-fg}r{/cyan-fg}:刷新 | {cyan-fg}c{/cyan-fg}:清除日志 ',
       style: {
         fg: 'white',
         bg: 'black',
@@ -229,13 +271,22 @@ export class Dashboard {
       this.updateStatus();
     });
 
-    // 手动买入
-    this.screen.key(['m'], async () => {
+    // 手动买入 UP
+    this.screen.key(['u'], async () => {
       if (!this.engine) return;
+      await this.showManualBuyDialog('UP');
+    });
 
-      // 简单实现 - 实际应该弹出输入框
-      this.log('{cyan-fg}手动买入功能 - 请在代码中配置{/cyan-fg}');
-      // await this.engine.manualBuy('UP', 0.5, 100);
+    // 手动买入 DOWN
+    this.screen.key(['d'], async () => {
+      if (!this.engine) return;
+      await this.showManualBuyDialog('DOWN');
+    });
+
+    // 调整参数
+    this.screen.key(['p'], () => {
+      if (!this.engine) return;
+      this.showParamsDialog();
     });
 
     // 刷新
@@ -332,6 +383,15 @@ export class Dashboard {
     eventBus.onEvent('system:error', (error: Error) => {
       this.log(`{red-fg}❌ 错误: ${error.message}{/red-fg}`);
     });
+
+    // 告警事件
+    eventBus.onEvent('alert:sent', (alert: Alert) => {
+      this.recentAlerts.unshift(alert);
+      if (this.recentAlerts.length > this.maxRecentAlerts) {
+        this.recentAlerts.pop();
+      }
+      this.updateAlerts();
+    });
   }
 
   /**
@@ -427,6 +487,49 @@ export class Dashboard {
   }
 
   /**
+   * 更新告警显示
+   */
+  private updateAlerts(): void {
+    const severityColors: Record<string, string> = {
+      'critical': 'red',
+      'warning': 'yellow',
+      'info': 'cyan',
+    };
+
+    const severityIcons: Record<string, string> = {
+      'critical': '🚨',
+      'warning': '⚠️',
+      'info': 'ℹ️',
+    };
+
+    const stats = this.alertManager.getStats();
+    const lines: string[] = [];
+
+    // 显示统计
+    lines.push(`  今日: {bold}${stats.todayCount}{/bold}`);
+    lines.push(`  总计: {gray-fg}${stats.totalCount}{/gray-fg}`);
+    lines.push('');
+
+    // 显示最近告警
+    if (this.recentAlerts.length === 0) {
+      lines.push('  {gray-fg}暂无告警{/gray-fg}');
+    } else {
+      for (const alert of this.recentAlerts.slice(0, 5)) {
+        const color = severityColors[alert.severity] || 'white';
+        const icon = severityIcons[alert.severity] || '•';
+        const time = new Date(alert.timestamp).toLocaleTimeString('zh-CN', {
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+        lines.push(`  {${color}-fg}${icon} ${time}{/${color}-fg}`);
+      }
+    }
+
+    this.alertBox.setContent(lines.join('\n'));
+    this.screen.render();
+  }
+
+  /**
    * 添加日志
    */
   public log(message: string): void {
@@ -440,6 +543,7 @@ export class Dashboard {
   private updateAll(): void {
     this.updateStatus();
     this.updateTrades();
+    this.updateAlerts();
     if (this.priceHistory.length > 0) {
       this.updatePrice(this.priceHistory[this.priceHistory.length - 1]);
     }
@@ -451,11 +555,13 @@ export class Dashboard {
   public start(): void {
     this.log('{green-fg}Dashboard 启动{/green-fg}');
     this.updateStatus();
+    this.updateAlerts();
     this.screen.render();
 
-    // 定期刷新状态
+    // 定期刷新状态和告警
     setInterval(() => {
       this.updateStatus();
+      this.updateAlerts();
     }, 1000);
   }
 
@@ -464,5 +570,296 @@ export class Dashboard {
    */
   public destroy(): void {
     this.screen.destroy();
+  }
+
+  // ===== 交互式对话框 =====
+
+  /**
+   * 显示手动买入对话框
+   */
+  private async showManualBuyDialog(side: Side): Promise<void> {
+    const currentPrice = this.priceHistory.length > 0
+      ? this.priceHistory[this.priceHistory.length - 1]
+      : null;
+
+    const priceStr = currentPrice
+      ? (side === 'UP' ? currentPrice.upBestAsk : currentPrice.downBestAsk).toFixed(4)
+      : 'N/A';
+
+    const prompt = blessed.prompt({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '50%',
+      height: 'shrink',
+      label: ` 手动买入 ${side} @ ${priceStr} `,
+      tags: true,
+      border: {
+        type: 'line',
+      },
+      style: {
+        fg: 'white',
+        bg: 'black',
+        border: {
+          fg: side === 'UP' ? 'green' : 'red',
+        },
+      },
+    });
+
+    prompt.input('输入份数 (shares):', '', async (err, value) => {
+      prompt.destroy();
+      this.screen.render();
+
+      if (err || !value) {
+        this.log('{yellow-fg}买入取消{/yellow-fg}');
+        return;
+      }
+
+      const shares = parseFloat(value);
+      if (isNaN(shares) || shares <= 0) {
+        this.log('{red-fg}无效的份数{/red-fg}');
+        return;
+      }
+
+      this.log(`{cyan-fg}正在买入 ${side} ${shares} 份...{/cyan-fg}`);
+
+      try {
+        await this.engine!.manualBuy(side, shares, true);
+        this.log(`{green-fg}买入成功: ${side} ${shares} 份{/green-fg}`);
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        this.log(`{red-fg}买入失败: ${errorMsg}{/red-fg}`);
+        logger.error('Manual buy failed', { side, shares, error: errorMsg });
+      }
+    });
+
+    this.screen.render();
+  }
+
+  /**
+   * 显示参数调整对话框
+   */
+  private showParamsDialog(): void {
+    const config = this.engine!.getConfig();
+
+    const form = blessed.form({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '60%',
+      height: 18,
+      label: ' 调整交易参数 ',
+      tags: true,
+      keys: true,
+      border: {
+        type: 'line',
+      },
+      style: {
+        fg: 'white',
+        bg: 'black',
+        border: {
+          fg: 'cyan',
+        },
+      },
+    });
+
+    // 份数
+    blessed.text({
+      parent: form,
+      top: 1,
+      left: 2,
+      content: `份数 (shares): ${config.shares}`,
+      tags: true,
+    });
+
+    const sharesInput = blessed.textbox({
+      parent: form,
+      name: 'shares',
+      top: 1,
+      left: 25,
+      width: 15,
+      height: 1,
+      inputOnFocus: true,
+      value: String(config.shares),
+      style: {
+        fg: 'white',
+        bg: 'blue',
+        focus: {
+          bg: 'green',
+        },
+      },
+    });
+
+    // sumTarget
+    blessed.text({
+      parent: form,
+      top: 3,
+      left: 2,
+      content: `对冲阈值 (sumTarget): ${config.sumTarget}`,
+      tags: true,
+    });
+
+    const sumTargetInput = blessed.textbox({
+      parent: form,
+      name: 'sumTarget',
+      top: 3,
+      left: 25,
+      width: 15,
+      height: 1,
+      inputOnFocus: true,
+      value: String(config.sumTarget),
+      style: {
+        fg: 'white',
+        bg: 'blue',
+        focus: {
+          bg: 'green',
+        },
+      },
+    });
+
+    // movePct
+    blessed.text({
+      parent: form,
+      top: 5,
+      left: 2,
+      content: `暴跌阈值 (movePct): ${(config.movePct * 100).toFixed(1)}%`,
+      tags: true,
+    });
+
+    const movePctInput = blessed.textbox({
+      parent: form,
+      name: 'movePct',
+      top: 5,
+      left: 25,
+      width: 15,
+      height: 1,
+      inputOnFocus: true,
+      value: String((config.movePct * 100).toFixed(1)),
+      style: {
+        fg: 'white',
+        bg: 'blue',
+        focus: {
+          bg: 'green',
+        },
+      },
+    });
+
+    // windowMin
+    blessed.text({
+      parent: form,
+      top: 7,
+      left: 2,
+      content: `监控窗口 (windowMin): ${config.windowMin} 分钟`,
+      tags: true,
+    });
+
+    const windowMinInput = blessed.textbox({
+      parent: form,
+      name: 'windowMin',
+      top: 7,
+      left: 25,
+      width: 15,
+      height: 1,
+      inputOnFocus: true,
+      value: String(config.windowMin),
+      style: {
+        fg: 'white',
+        bg: 'blue',
+        focus: {
+          bg: 'green',
+        },
+      },
+    });
+
+    // 按钮
+    const saveBtn = blessed.button({
+      parent: form,
+      top: 10,
+      left: 2,
+      width: 12,
+      height: 3,
+      content: '保存',
+      align: 'center',
+      style: {
+        fg: 'white',
+        bg: 'green',
+        focus: {
+          bg: 'cyan',
+        },
+      },
+    });
+
+    const cancelBtn = blessed.button({
+      parent: form,
+      top: 10,
+      left: 16,
+      width: 12,
+      height: 3,
+      content: '取消',
+      align: 'center',
+      style: {
+        fg: 'white',
+        bg: 'red',
+        focus: {
+          bg: 'magenta',
+        },
+      },
+    });
+
+    // 事件处理
+    saveBtn.on('press', () => {
+      const newShares = parseFloat(sharesInput.getValue() || String(config.shares));
+      const newSumTarget = parseFloat(sumTargetInput.getValue() || String(config.sumTarget));
+      const newMovePct = parseFloat(movePctInput.getValue() || String(config.movePct * 100)) / 100;
+      const newWindowMin = parseFloat(windowMinInput.getValue() || String(config.windowMin));
+
+      // 验证
+      if (isNaN(newShares) || newShares <= 0) {
+        this.log('{red-fg}无效的份数{/red-fg}');
+        return;
+      }
+      if (isNaN(newSumTarget) || newSumTarget < 0.5 || newSumTarget > 1.0) {
+        this.log('{red-fg}sumTarget 必须在 0.5-1.0 之间{/red-fg}');
+        return;
+      }
+      if (isNaN(newMovePct) || newMovePct < 0.01 || newMovePct > 0.30) {
+        this.log('{red-fg}movePct 必须在 1%-30% 之间{/red-fg}');
+        return;
+      }
+      if (isNaN(newWindowMin) || newWindowMin < 1 || newWindowMin > 15) {
+        this.log('{red-fg}windowMin 必须在 1-15 之间{/red-fg}');
+        return;
+      }
+
+      // 更新配置
+      this.engine!.updateConfig({
+        shares: newShares,
+        sumTarget: newSumTarget,
+        movePct: newMovePct,
+        windowMin: newWindowMin,
+      });
+
+      this.log(`{green-fg}参数已更新: shares=${newShares}, sumTarget=${newSumTarget}, movePct=${(newMovePct * 100).toFixed(1)}%, windowMin=${newWindowMin}{/green-fg}`);
+
+      form.destroy();
+      this.screen.render();
+    });
+
+    cancelBtn.on('press', () => {
+      this.log('{yellow-fg}参数调整取消{/yellow-fg}');
+      form.destroy();
+      this.screen.render();
+    });
+
+    // ESC 关闭
+    form.key(['escape'], () => {
+      form.destroy();
+      this.screen.render();
+    });
+
+    // Tab 切换焦点
+    sharesInput.focus();
+
+    this.screen.render();
   }
 }

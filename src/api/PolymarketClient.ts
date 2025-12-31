@@ -3,7 +3,9 @@
  * 处理订单提交、查询等 REST 操作
  */
 
-import axios, { AxiosInstance, AxiosError } from 'axios';
+import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
+import https from 'https';
+import { randomUUID, createHash, createHmac } from 'crypto';
 import { ethers } from 'ethers';
 import { logger } from '../utils/logger.js';
 import { withRetry } from '../utils/index.js';
@@ -43,38 +45,74 @@ interface OrderResponse {
   updatedAt: string;
 }
 
+// SEC-006: 时间戳容忍窗口 (毫秒)
+const TIMESTAMP_TOLERANCE_MS = 30000; // 30 秒
+
+/**
+ * Builder API 凭据接口
+ */
+interface BuilderCreds {
+  key: string;
+  secret: string;
+  passphrase: string;
+}
+
 export class PolymarketClient {
   private config: BotConfig;
   private httpClient: AxiosInstance;
   private wallet: ethers.Wallet | null = null;
+  private walletAddress: string | null = null; // 缓存地址，钱包清除后仍可访问
+  private usedNonces: Set<string> = new Set(); // SEC-006: 防止 nonce 重放
+  private nonceCleanupInterval: NodeJS.Timeout | null = null;
+  private builderCreds: BuilderCreds | null = null; // Builder API 凭据
 
   constructor(config: BotConfig) {
     this.config = config;
+
+    // 创建 HTTPS Agent，显式启用证书验证 (SEC-003)
+    const httpsAgent = new https.Agent({
+      rejectUnauthorized: true, // 拒绝无效证书
+      minVersion: 'TLSv1.2',    // 最低 TLS 版本
+    });
 
     // 创建 HTTP 客户端
     this.httpClient = axios.create({
       baseURL: config.apiUrl,
       timeout: 30000,
+      httpsAgent,
       headers: {
         'Content-Type': 'application/json',
       },
     });
 
-    // 添加请求拦截器用于签名
+    // 添加请求拦截器用于签名 (SEC-006: 增强签名机制)
     this.httpClient.interceptors.request.use(
-      async (config) => {
-        // 添加认证头 (如果需要)
+      async (requestConfig: InternalAxiosRequestConfig) => {
+        // 添加钱包认证头 (如果需要)
         if (this.wallet) {
-          const timestamp = Date.now().toString();
-          const signature = await this.signMessage(timestamp);
-          config.headers['X-Timestamp'] = timestamp;
-          config.headers['X-Signature'] = signature;
-          config.headers['X-Address'] = this.wallet.address;
+          const signatureData = await this.createSignedRequest(requestConfig);
+          requestConfig.headers['X-Timestamp'] = signatureData.timestamp;
+          requestConfig.headers['X-Nonce'] = signatureData.nonce;
+          requestConfig.headers['X-Signature'] = signatureData.signature;
+          requestConfig.headers['X-Address'] = this.wallet.address;
         }
-        return config;
+
+        // 添加 Builder API 认证头 (订单归因)
+        if (this.builderCreds) {
+          const builderAuth = this.createBuilderAuthHeaders(requestConfig);
+          requestConfig.headers['POLY_API_KEY'] = builderAuth.apiKey;
+          requestConfig.headers['POLY_SIGNATURE'] = builderAuth.signature;
+          requestConfig.headers['POLY_TIMESTAMP'] = builderAuth.timestamp;
+          requestConfig.headers['POLY_PASSPHRASE'] = builderAuth.passphrase;
+        }
+
+        return requestConfig;
       },
       (error) => Promise.reject(error)
     );
+
+    // SEC-006: 启动 nonce 清理定时器 (每分钟清理过期 nonce)
+    this.startNonceCleanup();
 
     // 添加响应拦截器用于错误处理
     this.httpClient.interceptors.response.use(
@@ -97,9 +135,20 @@ export class PolymarketClient {
       this.initWallet(config.privateKey);
     }
 
+    // 初始化 Builder API 凭据 (如果提供)
+    if (config.builderApiKey && config.builderSecret && config.builderPassphrase) {
+      this.builderCreds = {
+        key: config.builderApiKey,
+        secret: config.builderSecret,
+        passphrase: config.builderPassphrase,
+      };
+      logger.info('Builder API credentials configured');
+    }
+
     logger.info('PolymarketClient initialized', {
       apiUrl: config.apiUrl,
       hasWallet: !!this.wallet,
+      hasBuilderCreds: !!this.builderCreds,
       dryRun: config.dryRun,
       readOnly: config.readOnly,
     });
@@ -111,7 +160,8 @@ export class PolymarketClient {
   private initWallet(privateKey: string): void {
     try {
       this.wallet = new ethers.Wallet(privateKey);
-      logger.info('Wallet initialized', { address: this.wallet.address });
+      this.walletAddress = this.wallet.address; // 缓存地址
+      logger.info('Wallet initialized', { address: this.walletAddress });
     } catch (error) {
       logger.error('Failed to initialize wallet', { error });
       throw new Error('Invalid private key');
@@ -119,13 +169,178 @@ export class PolymarketClient {
   }
 
   /**
-   * 签名消息
+   * 清除钱包私钥 (SEC-001)
+   * 在不需要签名时调用，减少私钥在内存中的暴露时间
    */
-  private async signMessage(message: string): Promise<string> {
+  clearWallet(): void {
+    if (this.wallet) {
+      // 注意: ethers.js v6 的 Wallet 对象无法直接清除私钥
+      // 但我们可以解除引用，让 GC 回收
+      this.wallet = null;
+      logger.info('Wallet cleared from memory', { address: this.walletAddress });
+    }
+  }
+
+  /**
+   * 检查钱包是否已初始化
+   */
+  hasWallet(): boolean {
+    return this.wallet !== null;
+  }
+
+  /**
+   * 重新初始化钱包 (如果之前被清除)
+   */
+  reinitializeWallet(): boolean {
+    if (this.wallet) {
+      return true; // 已经初始化
+    }
+
+    if (this.config.privateKey && !this.config.dryRun && !this.config.readOnly) {
+      this.initWallet(this.config.privateKey);
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * SEC-006: 创建带签名的请求数据
+   * 签名内容包括: 时间戳 + nonce + 请求方法 + 请求路径 + 请求体哈希
+   */
+  private async createSignedRequest(requestConfig: InternalAxiosRequestConfig): Promise<{
+    timestamp: string;
+    nonce: string;
+    signature: string;
+  }> {
     if (!this.wallet) {
       throw new Error('Wallet not initialized');
     }
-    return this.wallet.signMessage(message);
+
+    const timestamp = Date.now().toString();
+    const nonce = randomUUID();
+    const method = (requestConfig.method || 'GET').toUpperCase();
+    const path = requestConfig.url || '/';
+
+    // 计算请求体哈希 (如果有)
+    let bodyHash = '';
+    if (requestConfig.data) {
+      const bodyStr = typeof requestConfig.data === 'string'
+        ? requestConfig.data
+        : JSON.stringify(requestConfig.data);
+      bodyHash = createHash('sha256').update(bodyStr).digest('hex');
+    }
+
+    // 构建签名消息
+    const signatureMessage = `${timestamp}:${nonce}:${method}:${path}:${bodyHash}`;
+
+    // 使用钱包签名
+    const signature = await this.wallet.signMessage(signatureMessage);
+
+    // 记录 nonce 防止重放
+    this.usedNonces.add(`${nonce}:${timestamp}`);
+
+    logger.debug('Created signed request', {
+      method,
+      path,
+      hasBody: !!bodyHash,
+      nonceCount: this.usedNonces.size,
+    });
+
+    return { timestamp, nonce, signature };
+  }
+
+  /**
+   * SEC-006: 启动 nonce 清理定时器
+   * 定期清理过期的 nonce，防止内存泄漏
+   */
+  private startNonceCleanup(): void {
+    // 每分钟清理一次过期 nonce
+    this.nonceCleanupInterval = setInterval(() => {
+      const now = Date.now();
+      const expiredNonces: string[] = [];
+
+      for (const entry of this.usedNonces) {
+        const [, timestampStr] = entry.split(':');
+        const timestamp = parseInt(timestampStr, 10);
+        // 清理超过容忍窗口两倍时间的 nonce
+        if (now - timestamp > TIMESTAMP_TOLERANCE_MS * 2) {
+          expiredNonces.push(entry);
+        }
+      }
+
+      for (const expired of expiredNonces) {
+        this.usedNonces.delete(expired);
+      }
+
+      if (expiredNonces.length > 0) {
+        logger.debug('Cleaned up expired nonces', { count: expiredNonces.length });
+      }
+    }, 60000);
+  }
+
+  /**
+   * SEC-006: 停止 nonce 清理定时器
+   */
+  stopNonceCleanup(): void {
+    if (this.nonceCleanupInterval) {
+      clearInterval(this.nonceCleanupInterval);
+      this.nonceCleanupInterval = null;
+    }
+  }
+
+  /**
+   * 创建 Builder API 认证头
+   * 使用 HMAC-SHA256 签名请求
+   */
+  private createBuilderAuthHeaders(requestConfig: InternalAxiosRequestConfig): {
+    apiKey: string;
+    signature: string;
+    timestamp: string;
+    passphrase: string;
+  } {
+    if (!this.builderCreds) {
+      throw new Error('Builder credentials not configured');
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const method = (requestConfig.method || 'GET').toUpperCase();
+    const path = requestConfig.url || '/';
+
+    // 构建签名消息: timestamp + method + path + body
+    let body = '';
+    if (requestConfig.data) {
+      body = typeof requestConfig.data === 'string'
+        ? requestConfig.data
+        : JSON.stringify(requestConfig.data);
+    }
+
+    const message = timestamp + method + path + body;
+
+    // 使用 HMAC-SHA256 签名
+    const signature = createHmac('sha256', Buffer.from(this.builderCreds.secret, 'base64'))
+      .update(message)
+      .digest('base64');
+
+    logger.debug('Created Builder API auth headers', {
+      method,
+      path,
+      hasBody: !!body,
+    });
+
+    return {
+      apiKey: this.builderCreds.key,
+      signature,
+      timestamp,
+      passphrase: this.builderCreds.passphrase,
+    };
+  }
+
+  /**
+   * 检查是否配置了 Builder API 凭据
+   */
+  hasBuilderCreds(): boolean {
+    return this.builderCreds !== null;
   }
 
   /**
@@ -338,7 +553,8 @@ export class PolymarketClient {
     shares: number,
     totalCost: number
   ): OrderResult {
-    const orderId = `sim-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    // 使用加密安全的随机 UUID (SEC-005)
+    const orderId = `sim-${randomUUID()}`;
     const avgPrice = totalCost / shares;
 
     logger.info('Simulated order (dry run)', {
@@ -438,9 +654,10 @@ export class PolymarketClient {
 
   /**
    * 获取钱包地址
+   * 即使钱包已清除，仍返回缓存的地址
    */
   getWalletAddress(): string | null {
-    return this.wallet?.address || null;
+    return this.walletAddress;
   }
 
   /**

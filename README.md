@@ -1,5 +1,10 @@
 # Polymarket Dump & Hedge Bot
 
+[![Tests](https://img.shields.io/badge/tests-259%20passed-brightgreen)](./tests)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0.0-green)](https://nodejs.org/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 全自动化 Polymarket 预测市场套利机器人 - 暴跌接针 + 无风险对冲策略
 
 ## 策略原理
@@ -39,13 +44,26 @@ IDLE → WATCHING → LEG1_PENDING → LEG1_FILLED → LEG2_PENDING → COMPLETE
 
 ## 功能特性
 
+### 核心功能
 - **实时监控**: WebSocket 连接 Polymarket CLOB API，毫秒级价格更新
 - **智能检测**: 滑动窗口算法检测暴跌信号，可配置阈值和时间窗口
 - **自动对冲**: 满足条件自动执行对冲，锁定无风险利润
+- **对冲概率预测**: 多因子分析预测对冲成功概率和时间
 - **回测系统**: 历史数据回放，参数网格优化
 - **终端界面**: blessed 打造的交互式 Dashboard
 - **数据持久化**: SQLite 存储行情数据和交易记录
 - **Dry-Run 模式**: 模拟交易，安全测试策略
+
+### 告警系统
+- **多渠道告警**: 支持 Console、Telegram Bot、Discord Webhook
+- **智能节流**: 可配置时间窗口内的最大告警数量
+- **静默时段**: 支持配置免打扰时间段
+- **分级告警**: info / warning / critical 三级告警
+- **实时通知**: 暴跌检测、订单状态、系统错误等关键事件
+
+### Builder API 支持
+- **订单归属**: 支持 Builder API 实现订单归属追踪
+- **HMAC 签名**: 完整的请求签名认证机制
 
 ## 快速开始
 
@@ -81,33 +99,67 @@ CONDITION_ID=<条件ID>
 # API 配置
 WS_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 API_URL=https://clob.polymarket.com
+CLOB_API=https://clob.polymarket.com
+GAMMA_API=https://gamma-api.polymarket.com
+DATA_API=https://data-api.polymarket.com
+CLOB_WS=wss://ws-subscriptions-clob.polymarket.com/ws/market
+RTDS_WS=wss://ws-live-data.polymarket.com
 
 # 交易配置
 PRIVATE_KEY=<你的私钥>  # 仅实盘需要
 MOVE_PCT=0.15           # 暴跌阈值 (15%)
-WINDOW_MIN=10           # 监控窗口 (分钟)
+WINDOW_MIN=2            # 监控窗口 (分钟)
 SUM_TARGET=0.95         # 对冲目标价格
-SHARES=100              # 每笔交易份额
-FEE_RATE=0.002          # 手续费率 (0.2%)
+DEFAULT_SHARES=20       # 每笔交易份额
+FEE_RATE=0.005          # 手续费率 (0.5%)
+
+# Builder API (可选，用于订单归属)
+BUILDER_API_KEY=<Builder API Key>
+BUILDER_SECRET=<Builder Secret>
+BUILDER_PASSPHRASE=<Builder Passphrase>
 
 # 模式
 DRY_RUN=true            # Dry-Run 模式
+READ_ONLY=false         # 只读模式
 
 # 数据库
 DB_PATH=./data/bot.db
+
+# 告警配置
+ALERT_MIN_SEVERITY=info              # 最低告警级别 (info/warning/critical)
+ALERT_THROTTLE_ENABLED=true          # 启用告警节流
+ALERT_THROTTLE_WINDOW_MS=60000       # 节流时间窗口 (ms)
+ALERT_THROTTLE_MAX_PER_WINDOW=10     # 窗口内最大告警数
+
+# Telegram 告警
+TELEGRAM_ENABLED=false
+TELEGRAM_BOT_TOKEN=<Bot Token>
+TELEGRAM_CHAT_ID=<Chat ID>
+
+# Discord 告警
+DISCORD_ENABLED=false
+DISCORD_WEBHOOK_URL=<Webhook URL>
+
+# 静默时段
+ALERT_QUIET_HOURS_ENABLED=false
+ALERT_QUIET_HOURS_START=22           # 开始时间 (24小时制)
+ALERT_QUIET_HOURS_END=8              # 结束时间
+ALERT_QUIET_HOURS_TIMEZONE=Asia/Shanghai
 ```
 
 ### 运行
 
 ```bash
 # 开发模式 (Dry-Run)
-npm run bot:dry
+npm run bot -- --dry
 
 # 实盘模式 (谨慎使用)
 npm run bot
 
-# 交互式 Dashboard
-npm run dashboard:dry
+# 交互式 Dashboard (Dry-Run)
+npm run dashboard -- --dry
+
+# 交互式 Dashboard (实盘)
 npm run dashboard
 
 # 数据录制 (用于回测)
@@ -127,49 +179,122 @@ npm run backtest -- --optimize \
 ```
 pmdumphedge/
 ├── src/
-│   ├── core/                 # 核心模块
-│   │   ├── StateMachine.ts   # 交易状态机
-│   │   ├── DumpDetector.ts   # 暴跌检测器
-│   │   ├── HedgeStrategy.ts  # 对冲策略
-│   │   ├── OrderExecutor.ts  # 订单执行器
-│   │   └── TradingEngine.ts  # 交易引擎
-│   ├── ws/                   # WebSocket 客户端
+│   ├── core/                   # 核心模块
+│   │   ├── StateMachine.ts     # 交易状态机
+│   │   ├── DumpDetector.ts     # 暴跌检测器
+│   │   ├── HedgeStrategy.ts    # 对冲策略 (含概率预测)
+│   │   ├── OrderExecutor.ts    # 订单执行器
+│   │   ├── MarketWatcher.ts    # 市场监控器
+│   │   ├── RoundManager.ts     # 轮次管理器
+│   │   └── TradingEngine.ts    # 交易引擎 (含告警集成)
+│   ├── api/                    # API 客户端
+│   │   └── PolymarketClient.ts # Polymarket API (含 Builder API)
+│   ├── ws/                     # WebSocket 客户端
 │   │   └── WebSocketClient.ts
-│   ├── db/                   # 数据库层
-│   │   ├── Database.ts       # SQLite 封装
-│   │   └── schema.sql        # 数据库 Schema
-│   ├── backtest/             # 回测模块
-│   │   ├── BacktestEngine.ts # 回测引擎
-│   │   └── ReplayEngine.ts   # 数据回放
-│   ├── ui/                   # 终端 UI
-│   │   └── Dashboard.ts      # blessed Dashboard
-│   ├── utils/                # 工具类
-│   │   ├── CircularBuffer.ts # 环形缓冲区
-│   │   ├── config.ts         # 配置加载
-│   │   ├── logger.ts         # 日志系统
-│   │   └── eventBus.ts       # 事件总线
-│   ├── types/                # TypeScript 类型定义
+│   ├── db/                     # 数据库层
+│   │   ├── Database.ts         # SQLite 封装
+│   │   └── schema.sql          # 数据库 Schema
+│   ├── backtest/               # 回测模块
+│   │   ├── BacktestEngine.ts   # 回测引擎
+│   │   └── ReplayEngine.ts     # 数据回放
+│   ├── ui/                     # 终端 UI
+│   │   └── Dashboard.ts        # blessed Dashboard (含告警面板)
+│   ├── utils/                  # 工具类
+│   │   ├── AlertManager.ts     # 告警管理器
+│   │   ├── CircularBuffer.ts   # 环形缓冲区
+│   │   ├── config.ts           # 配置加载 (含告警配置)
+│   │   ├── logger.ts           # 日志系统
+│   │   └── EventBus.ts         # 事件总线
+│   ├── types/                  # TypeScript 类型定义
 │   │   └── index.ts
-│   ├── index.ts              # 主入口
-│   ├── recorder.ts           # 数据录制入口
-│   ├── backtest.ts           # 回测 CLI 入口
-│   └── dashboard.ts          # Dashboard 入口
-├── tests/                    # 单元测试
+│   ├── index.ts                # Bot 主入口
+│   ├── recorder.ts             # 数据录制入口
+│   ├── backtest.ts             # 回测 CLI 入口
+│   └── dashboard.ts            # Dashboard 入口
+├── tests/                      # 测试套件
+│   ├── integration/            # 集成测试
+│   ├── e2e/                    # 端到端测试
+│   ├── performance/            # 性能测试
+│   ├── AlertManager.test.ts
+│   ├── BacktestEngine.test.ts
 │   ├── CircularBuffer.test.ts
-│   ├── StateMachine.test.ts
 │   ├── DumpDetector.test.ts
-│   └── HedgeStrategy.test.ts
-├── data/                     # 数据目录
-├── logs/                     # 日志目录
+│   ├── HedgeStrategy.test.ts
+│   ├── MarketWatcher.test.ts
+│   ├── PolymarketClient.test.ts
+│   ├── StateMachine.test.ts
+│   ├── TradingEngine.test.ts
+│   └── config.test.ts
+├── docs/                       # 文档
+│   └── DEPLOYMENT.md           # 部署指南
+├── data/                       # 数据目录
+├── logs/                       # 日志目录
 ├── package.json
 ├── tsconfig.json
 ├── vitest.config.ts
+├── CHANGELOG.md                # 更新日志
 └── README.md
 ```
 
 ## API 参考
 
 ### 核心类
+
+#### TradingEngine
+
+交易引擎，协调所有核心组件。
+
+```typescript
+import { TradingEngine } from './core/TradingEngine.js';
+import { loadConfig } from './utils/config.js';
+
+const config = loadConfig();
+const engine = new TradingEngine(config);
+
+// 启动/停止
+await engine.start();
+await engine.stop();
+
+// 查询状态
+engine.isEngineRunning();           // boolean
+engine.getStateMachine();           // StateMachine
+engine.getMarketWatcher();          // MarketWatcher
+engine.getRoundManager();           // RoundManager
+```
+
+#### AlertManager
+
+告警管理器，支持多渠道通知。
+
+```typescript
+import { getAlertManager, initAlertManager } from './utils/AlertManager.js';
+
+// 初始化 (通常在启动时调用)
+initAlertManager({
+  channels: {
+    console: true,
+    telegram: { botToken: '...', chatId: '...', enabled: true },
+    discord: { webhookUrl: '...', enabled: false },
+  },
+  minSeverity: 'info',
+  throttle: { enabled: true, windowMs: 60000, maxPerWindow: 10 },
+});
+
+// 发送告警
+const alertManager = getAlertManager();
+await alertManager.send({
+  type: 'dump_detected',
+  severity: 'warning',
+  title: '暴跌检测',
+  message: 'UP 价格暴跌 15%',
+  data: { side: 'UP', dropPct: 0.15 },
+});
+
+// 使用预定义模板
+await alertManager.alertDumpDetected('UP', 0.60, 0.45, 0.25);
+await alertManager.alertTradeCompleted(tradeCycle, profit);
+await alertManager.alertOrderFailed('Leg1', 'Insufficient funds');
+```
 
 #### StateMachine
 
@@ -213,7 +338,7 @@ detector.lockSide('UP');
 
 #### HedgeStrategy
 
-对冲策略计算器。
+对冲策略计算器，含概率预测功能。
 
 ```typescript
 const strategy = new HedgeStrategy(config);
@@ -226,6 +351,12 @@ const calc = strategy.calculateHedge(leg1Info, currentPrice);
 if (calc.shouldHedge) {
   console.log(`净利润: $${calc.potentialProfit}`);
 }
+
+// 预测对冲概率
+const prediction = strategy.predictHedgeProbability(priceHistory, leg1Info, currentPrice);
+console.log(`对冲概率: ${prediction.probability}%`);
+console.log(`预计时间: ${prediction.estimatedTime}秒`);
+console.log(`建议: ${prediction.recommendation}`);
 
 // 模拟对冲
 const sim = strategy.simulateHedge('UP', 0.45, 0.50, 100);
@@ -255,9 +386,58 @@ const recent = buffer.getInTimeWindow(3000, item => item.timestamp);
 |--------|------|
 | `q` / `Ctrl+C` | 退出 |
 | `s` | 启动/停止交易引擎 |
-| `m` | 手动买入 (测试用) |
+| `u` | 手动买入 UP |
+| `d` | 手动买入 DOWN |
+| `p` | 调整运行时参数 |
 | `r` | 刷新界面 |
 | `c` | 清空日志 |
+
+### Dashboard 面板说明
+
+- **状态面板**: 显示引擎状态、当前轮次、状态机状态
+- **价格面板**: 实时 UP/DOWN 价格、价格和、对冲条件
+- **持仓面板**: 当前交易周期信息、Leg1/Leg2 状态
+- **告警面板**: 今日告警数、告警历史、最近告警
+- **日志面板**: 实时操作日志
+
+## 测试
+
+```bash
+# 运行所有单元测试
+npm test
+
+# 监听模式
+npm run test:watch
+
+# 覆盖率报告
+npm run test:coverage
+
+# 集成测试
+npm run test:integration
+
+# 端到端测试
+npm run test:e2e
+
+# 性能测试
+npm run test:perf
+
+# 运行所有测试
+npm run test:all
+
+# 类型检查
+npm run typecheck
+```
+
+### 测试覆盖率
+
+当前测试套件包含 **259 个测试用例**，覆盖率约 **72%**。
+
+主要测试模块：
+- 核心模块：StateMachine, DumpDetector, HedgeStrategy, TradingEngine
+- API 客户端：PolymarketClient (含 Builder API)
+- 工具类：CircularBuffer, AlertManager, config
+- 回测引擎：BacktestEngine
+- 市场监控：MarketWatcher
 
 ## 回测
 
@@ -293,21 +473,19 @@ npm run backtest -- --output results.csv --format csv
 - **胜率**: 盈利交易占比
 - **盈亏比**: 平均盈利/平均亏损
 
-## 测试
+## 部署
 
-```bash
-# 运行所有测试
-npm test
+详细部署指南请参考 [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)。
 
-# 监听模式
-npm run test:watch
+快速部署步骤：
+1. 配置环境变量
+2. 构建项目：`npm run build`
+3. 启动服务：`npm run bot` 或 `npm run dashboard`
 
-# 覆盖率报告
-npm run test:coverage
-
-# 类型检查
-npm run typecheck
-```
+支持的部署方式：
+- PM2 进程管理
+- Docker 容器化
+- systemd 服务
 
 ## 风险提示
 
@@ -321,6 +499,11 @@ npm run typecheck
 - 小资金实盘验证后再逐步加仓
 - 持续监控机器人运行状态
 - 设置合理的止损机制
+- 配置 Telegram/Discord 告警，及时获取通知
+
+## 更新日志
+
+详见 [CHANGELOG.md](./CHANGELOG.md)
 
 ## 许可证
 

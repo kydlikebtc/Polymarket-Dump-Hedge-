@@ -11,9 +11,10 @@
 
 import { Dashboard } from './ui/index.js';
 import { TradingEngine } from './core/index.js';
-import { loadConfig } from './utils/config.js';
+import { loadConfig, loadAlertConfig } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { getDatabase, closeDatabase } from './db/index.js';
+import { initAlertManager } from './utils/AlertManager.js';
 
 // 全局状态
 let dashboard: Dashboard | null = null;
@@ -84,6 +85,10 @@ async function main(): Promise<void> {
   if (dryRun) {
     config.dryRun = true;
   }
+
+  // 初始化告警管理器
+  const alertConfig = loadAlertConfig();
+  initAlertManager(alertConfig);
 
   // 初始化数据库
   getDatabase();

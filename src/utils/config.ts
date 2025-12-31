@@ -4,7 +4,7 @@
  */
 
 import dotenv from 'dotenv';
-import type { BotConfig } from '../types/index.js';
+import type { BotConfig, AlertConfig, AlertSeverity } from '../types/index.js';
 import { logger } from './logger.js';
 
 // 加载 .env 文件
@@ -25,7 +25,35 @@ function getEnv(key: string, defaultValue?: string): string {
 }
 
 /**
- * 获取数字类型的环境变量
+ * 数字环境变量的边界配置 (SEC-009)
+ */
+interface NumberBounds {
+  min?: number;
+  max?: number;
+}
+
+/**
+ * 环境变量边界配置表 (SEC-009)
+ * 定义每个数字类型环境变量的有效范围
+ */
+const ENV_NUMBER_BOUNDS: Record<string, NumberBounds> = {
+  // 交易参数
+  DEFAULT_SHARES: { min: 1, max: 10000 },
+  SUM_TARGET: { min: 0.5, max: 1.0 },
+  MOVE_PCT: { min: 0.01, max: 0.50 },
+  WINDOW_MIN: { min: 1, max: 15 },
+
+  // 网络配置
+  RECONNECT_DELAY: { min: 100, max: 60000 },
+  MAX_RECONNECTS: { min: 0, max: 100 },
+
+  // 费用参数
+  FEE_RATE: { min: 0, max: 0.10 },
+  SPREAD_BUFFER: { min: 0, max: 0.20 },
+};
+
+/**
+ * 获取数字类型的环境变量 (带边界检查 SEC-009)
  */
 function getEnvNumber(key: string, defaultValue?: number): number {
   const value = process.env[key];
@@ -39,6 +67,22 @@ function getEnvNumber(key: string, defaultValue?: number): number {
   if (isNaN(parsed)) {
     throw new Error(`Invalid number for environment variable ${key}: ${value}`);
   }
+
+  // SEC-009: 边界检查
+  const bounds = ENV_NUMBER_BOUNDS[key];
+  if (bounds) {
+    if (bounds.min !== undefined && parsed < bounds.min) {
+      throw new Error(
+        `Environment variable ${key} value ${parsed} is below minimum ${bounds.min}`
+      );
+    }
+    if (bounds.max !== undefined && parsed > bounds.max) {
+      throw new Error(
+        `Environment variable ${key} value ${parsed} exceeds maximum ${bounds.max}`
+      );
+    }
+  }
+
   return parsed;
 }
 
@@ -126,6 +170,11 @@ export function loadConfig(): BotConfig {
     privateKey: getEnv('PRIVATE_KEY', ''),
     walletAddress: getEnv('WALLET_ADDRESS', ''),
 
+    // Builder API 配置 (可选)
+    builderApiKey: getEnv('BUILDER_API_KEY', '') || undefined,
+    builderSecret: getEnv('BUILDER_SECRET', '') || undefined,
+    builderPassphrase: getEnv('BUILDER_PASSPHRASE', '') || undefined,
+
     // 运行模式
     readOnly: getEnvBoolean('READ_ONLY', false),
     dryRun: getEnvBoolean('DRY_RUN', false),
@@ -139,6 +188,7 @@ export function loadConfig(): BotConfig {
     sumTarget: config.sumTarget,
     movePct: `${config.movePct * 100}%`,
     windowMin: `${config.windowMin} min`,
+    builderApiConfigured: !!config.builderApiKey,
   });
 
   return config;
@@ -178,4 +228,58 @@ export function getConfig(): BotConfig {
 export function setConfig(config: BotConfig): void {
   validateConfig(config);
   configInstance = config;
+}
+
+/**
+ * 加载告警配置
+ */
+export function loadAlertConfig(): Partial<AlertConfig> {
+  logger.info('Loading alert configuration from environment variables');
+
+  const minSeverityStr = getEnv('ALERT_MIN_SEVERITY', 'info');
+  const validSeverities: AlertSeverity[] = ['info', 'warning', 'critical'];
+  const minSeverity: AlertSeverity = validSeverities.includes(minSeverityStr as AlertSeverity)
+    ? (minSeverityStr as AlertSeverity)
+    : 'info';
+
+  const config: Partial<AlertConfig> = {
+    channels: {
+      console: true,
+      telegram: {
+        botToken: getEnv('TELEGRAM_BOT_TOKEN', ''),
+        chatId: getEnv('TELEGRAM_CHAT_ID', ''),
+        enabled: getEnvBoolean('TELEGRAM_ENABLED', false),
+      },
+      discord: {
+        webhookUrl: getEnv('DISCORD_WEBHOOK_URL', ''),
+        enabled: getEnvBoolean('DISCORD_ENABLED', false),
+      },
+    },
+    minSeverity,
+    throttle: {
+      enabled: getEnvBoolean('ALERT_THROTTLE_ENABLED', true),
+      windowMs: getEnvNumber('ALERT_THROTTLE_WINDOW_MS', 60000),
+      maxPerWindow: getEnvNumber('ALERT_THROTTLE_MAX_PER_WINDOW', 10),
+    },
+  };
+
+  // 加载静默时段配置
+  if (getEnvBoolean('ALERT_QUIET_HOURS_ENABLED', false)) {
+    config.quietHours = {
+      enabled: true,
+      startHour: getEnvNumber('ALERT_QUIET_HOURS_START', 22),
+      endHour: getEnvNumber('ALERT_QUIET_HOURS_END', 8),
+      timezone: getEnv('ALERT_QUIET_HOURS_TIMEZONE', 'Asia/Shanghai'),
+    };
+  }
+
+  logger.info('Alert configuration loaded', {
+    minSeverity,
+    telegramEnabled: config.channels?.telegram?.enabled,
+    discordEnabled: config.channels?.discord?.enabled,
+    throttleEnabled: config.throttle?.enabled,
+    quietHoursEnabled: config.quietHours?.enabled,
+  });
+
+  return config;
 }

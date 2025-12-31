@@ -8,10 +8,104 @@ import { format } from 'date-fns';
 import path from 'path';
 import fs from 'fs';
 
-// 确保日志目录存在
+// 敏感字段列表 (SEC-002: 日志脱敏)
+const SENSITIVE_FIELDS = [
+  'privateKey',
+  'private_key',
+  'apiKey',
+  'api_key',
+  'apiSecret',
+  'api_secret',
+  'password',
+  'secret',
+  'token',
+  'authorization',
+  'signature',
+  'mnemonic',
+  'seed',
+];
+
+// 地址相关字段 (部分脱敏)
+const ADDRESS_FIELDS = ['address', 'walletAddress', 'wallet_address', 'from', 'to'];
+
+/**
+ * 脱敏单个值
+ */
+function redactValue(value: unknown, fieldName: string): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  const lowerFieldName = fieldName.toLowerCase();
+
+  // 完全敏感字段 - 完全隐藏
+  if (SENSITIVE_FIELDS.some(sf => lowerFieldName.includes(sf.toLowerCase()))) {
+    return '[REDACTED]';
+  }
+
+  // 地址字段 - 部分显示
+  if (ADDRESS_FIELDS.some(af => lowerFieldName.includes(af.toLowerCase()))) {
+    if (typeof value === 'string' && value.length > 10) {
+      return `${value.slice(0, 6)}...${value.slice(-4)}`;
+    }
+  }
+
+  return value;
+}
+
+/**
+ * 递归脱敏对象 (SEC-002)
+ */
+function redactSensitiveData(obj: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === null || value === undefined) {
+      result[key] = value;
+    } else if (Array.isArray(value)) {
+      result[key] = value.map((item, index) =>
+        typeof item === 'object' && item !== null
+          ? redactSensitiveData(item as Record<string, unknown>)
+          : redactValue(item, `${key}[${index}]`)
+      );
+    } else if (typeof value === 'object') {
+      result[key] = redactSensitiveData(value as Record<string, unknown>);
+    } else {
+      result[key] = redactValue(value, key);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Winston 脱敏格式化器
+ */
+const redactFormat = winston.format((info) => {
+  // 脱敏 meta 数据
+  const { level, message, timestamp, service, ...meta } = info;
+  const redactedMeta = redactSensitiveData(meta);
+
+  return {
+    level,
+    message,
+    timestamp,
+    service,
+    ...redactedMeta,
+  };
+});
+
+// 确保日志目录存在，并限制权限 (SEC-008)
 const logDir = process.env.LOG_DIR || './logs';
 if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir, { recursive: true });
+  fs.mkdirSync(logDir, { recursive: true, mode: 0o700 }); // 仅所有者可读写执行
+} else {
+  // 尝试修复现有目录权限
+  try {
+    fs.chmodSync(logDir, 0o700);
+  } catch {
+    // 忽略权限修改失败 (可能在某些系统上不支持)
+  }
 }
 
 // 自定义日志格式
@@ -37,7 +131,8 @@ export const logger = winston.createLogger({
     winston.format.timestamp({
       format: () => format(new Date(), 'yyyy-MM-dd HH:mm:ss.SSS'),
     }),
-    winston.format.errors({ stack: true })
+    winston.format.errors({ stack: true }),
+    redactFormat() // 应用脱敏格式化器 (SEC-002)
   ),
   defaultMeta: { service: 'polymarket-bot' },
   transports: [
@@ -72,7 +167,8 @@ export const tradeLogger = winston.createLogger({
   format: winston.format.combine(
     winston.format.timestamp({
       format: () => format(new Date(), 'yyyy-MM-dd HH:mm:ss.SSS'),
-    })
+    }),
+    redactFormat() // 应用脱敏格式化器 (SEC-002)
   ),
   transports: [
     new winston.transports.File({
@@ -90,7 +186,8 @@ export const priceLogger = winston.createLogger({
   format: winston.format.combine(
     winston.format.timestamp({
       format: () => format(new Date(), 'yyyy-MM-dd HH:mm:ss.SSS'),
-    })
+    }),
+    redactFormat() // 应用脱敏格式化器 (SEC-002)
   ),
   transports: [
     new winston.transports.File({

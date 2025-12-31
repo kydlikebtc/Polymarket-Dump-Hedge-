@@ -27,13 +27,32 @@ const VALID_TRANSITIONS: Record<CycleStatus, CycleStatus[]> = {
   'ERROR': ['IDLE'],
 };
 
+// 默认超时配置 (毫秒)
+const DEFAULT_TIMEOUTS = {
+  LEG1_PENDING: 30 * 1000,   // Leg1 下单后 30 秒未成交
+  LEG1_FILLED: 120 * 1000,   // Leg1 成交后 120 秒未能对冲 (警告)
+  LEG2_PENDING: 30 * 1000,   // Leg2 下单后 30 秒未成交
+};
+
+export interface TimeoutConfig {
+  leg1PendingTimeout: number;
+  leg1FilledTimeout: number;
+  leg2PendingTimeout: number;
+}
+
 export class StateMachine {
   private currentCycle: TradeCycle | null = null;
   private transitionHistory: StateTransition[] = [];
   private onCycleComplete?: (cycle: TradeCycle) => void;
+  private timeoutConfig: TimeoutConfig;
 
-  constructor() {
-    logger.info('StateMachine initialized');
+  constructor(timeoutConfig?: Partial<TimeoutConfig>) {
+    this.timeoutConfig = {
+      leg1PendingTimeout: timeoutConfig?.leg1PendingTimeout ?? DEFAULT_TIMEOUTS.LEG1_PENDING,
+      leg1FilledTimeout: timeoutConfig?.leg1FilledTimeout ?? DEFAULT_TIMEOUTS.LEG1_FILLED,
+      leg2PendingTimeout: timeoutConfig?.leg2PendingTimeout ?? DEFAULT_TIMEOUTS.LEG2_PENDING,
+    };
+    logger.info('StateMachine initialized', { timeoutConfig: this.timeoutConfig });
   }
 
   /**
@@ -410,6 +429,146 @@ export class StateMachine {
    */
   getLeg1(): LegInfo | undefined {
     return this.currentCycle?.leg1;
+  }
+
+  /**
+   * 检查当前状态是否超时
+   * 返回超时信息，供 TradingEngine 处理
+   */
+  checkTimeout(): {
+    isTimeout: boolean;
+    status: CycleStatus | null;
+    elapsedMs: number;
+    timeoutMs: number;
+    action: 'none' | 'warn' | 'cancel' | 'expire';
+  } {
+    if (!this.currentCycle) {
+      return { isTimeout: false, status: null, elapsedMs: 0, timeoutMs: 0, action: 'none' };
+    }
+
+    const status = this.currentCycle.status;
+    const now = Date.now();
+
+    // 获取进入当前状态的时间
+    const lastTransition = this.transitionHistory[this.transitionHistory.length - 1];
+    const stateEntryTime = lastTransition?.timestamp ?? this.currentCycle.createdAt;
+    const elapsedMs = now - stateEntryTime;
+
+    let timeoutMs = 0;
+    let action: 'none' | 'warn' | 'cancel' | 'expire' = 'none';
+
+    switch (status) {
+      case 'LEG1_PENDING':
+        timeoutMs = this.timeoutConfig.leg1PendingTimeout;
+        if (elapsedMs > timeoutMs) {
+          action = 'cancel'; // 取消 Leg1 订单
+        }
+        break;
+
+      case 'LEG1_FILLED':
+        timeoutMs = this.timeoutConfig.leg1FilledTimeout;
+        if (elapsedMs > timeoutMs) {
+          action = 'warn'; // 警告：长时间未对冲
+        }
+        break;
+
+      case 'LEG2_PENDING':
+        timeoutMs = this.timeoutConfig.leg2PendingTimeout;
+        if (elapsedMs > timeoutMs) {
+          action = 'cancel'; // 取消 Leg2 订单
+        }
+        break;
+
+      default:
+        // 其他状态不检查超时
+        break;
+    }
+
+    const isTimeout = action !== 'none';
+
+    if (isTimeout) {
+      logger.warn('State timeout detected', {
+        cycleId: this.currentCycle.id,
+        status,
+        elapsedMs,
+        timeoutMs,
+        action,
+      });
+    }
+
+    return { isTimeout, status, elapsedMs, timeoutMs, action };
+  }
+
+  /**
+   * 获取 Leg1 未对冲的持续时间 (毫秒)
+   * 用于 UI 显示和决策
+   */
+  getLeg1UnhedgedDuration(): number {
+    if (!this.currentCycle || this.currentCycle.status !== 'LEG1_FILLED') {
+      return 0;
+    }
+
+    const leg1 = this.currentCycle.leg1;
+    if (!leg1) {
+      return 0;
+    }
+
+    return Date.now() - leg1.filledAt;
+  }
+
+  /**
+   * 检查是否应该强制过期 (轮次即将结束但仍有未对冲的 Leg1)
+   */
+  shouldForceExpire(roundRemainingSeconds: number): boolean {
+    if (!this.currentCycle) {
+      return false;
+    }
+
+    const status = this.currentCycle.status;
+
+    // 如果在 LEG1_FILLED 状态且轮次剩余时间不足，应该强制过期
+    if (status === 'LEG1_FILLED' && roundRemainingSeconds < 10) {
+      logger.warn('Force expire: round ending with unhedged Leg1', {
+        cycleId: this.currentCycle.id,
+        roundRemainingSeconds,
+      });
+      return true;
+    }
+
+    // 如果在等待状态且轮次剩余时间不足
+    if ((status === 'LEG1_PENDING' || status === 'LEG2_PENDING') && roundRemainingSeconds < 5) {
+      logger.warn('Force expire: round ending with pending order', {
+        cycleId: this.currentCycle.id,
+        status,
+        roundRemainingSeconds,
+      });
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * 获取超时配置
+   */
+  getTimeoutConfig(): TimeoutConfig {
+    return { ...this.timeoutConfig };
+  }
+
+  /**
+   * 更新超时配置
+   */
+  updateTimeoutConfig(config: Partial<TimeoutConfig>): void {
+    if (config.leg1PendingTimeout !== undefined) {
+      this.timeoutConfig.leg1PendingTimeout = config.leg1PendingTimeout;
+    }
+    if (config.leg1FilledTimeout !== undefined) {
+      this.timeoutConfig.leg1FilledTimeout = config.leg1FilledTimeout;
+    }
+    if (config.leg2PendingTimeout !== undefined) {
+      this.timeoutConfig.leg2PendingTimeout = config.leg2PendingTimeout;
+    }
+    logger.info('Timeout config updated', { timeoutConfig: this.timeoutConfig });
   }
 }
 
