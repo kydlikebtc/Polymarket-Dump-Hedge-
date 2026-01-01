@@ -2,18 +2,25 @@
  * 终端 Dashboard UI
  *
  * 使用 blessed 库实现交互式终端界面
+ * v0.3.0: 重新设计 UI，突出套利机会
+ *
  * 支持：
- * - 实时价格监控
+ * - 实时价格监控与套利分析
+ * - 持仓显示与盈亏计算
  * - 手动交易（买入 UP/DOWN）
  * - 运行时参数调整
- * - 交易记录查看
+ * - 最近交易记录
  */
 
-import * as blessed from 'blessed';
+import type * as BlessedTypes from 'blessed';
+import * as blessedModule from 'blessed';
 import { TradingEngine } from '../core/index.js';
+
+// ESM/CommonJS 兼容性处理：blessed 使用 CommonJS 导出，需要通过 default 访问
+const blessed: typeof BlessedTypes = (blessedModule as any).default || blessedModule;
 import { eventBus } from '../utils/EventBus.js';
 import { logger } from '../utils/logger.js';
-import { getAlertManager, type AlertManager, type Alert } from '../utils/AlertManager.js';
+import { getAlertManager, type Alert } from '../utils/AlertManager.js';
 import type {
   PriceSnapshot,
   DumpSignal,
@@ -22,24 +29,42 @@ import type {
   CycleStatus,
   Side,
 } from '../types/index.js';
+import type { OrderBookSnapshot } from '../api/MarketWatcher.js';
+
+// 主题颜色配置
+const THEME = {
+  primary: 'cyan',
+  success: 'green',
+  danger: 'red',
+  warning: 'yellow',
+  muted: 'gray',
+  bg: 'black',
+  border: 'cyan',
+};
 
 export class Dashboard {
-  private screen: blessed.Widgets.Screen;
-  private headerBox: blessed.Widgets.BoxElement;
-  private priceBox: blessed.Widgets.BoxElement;
-  private statusBox: blessed.Widgets.BoxElement;
-  private alertBox: blessed.Widgets.BoxElement;
-  private logBox: blessed.Widgets.Log;
-  private tradesBox: blessed.Widgets.ListElement;
-  private helpBox: blessed.Widgets.BoxElement;
+  private screen: BlessedTypes.Widgets.Screen;
+  private headerBox: BlessedTypes.Widgets.BoxElement;
+  private marketInfoBox: BlessedTypes.Widgets.BoxElement;
+  private orderBookBox: BlessedTypes.Widgets.BoxElement;
+  private positionsBox: BlessedTypes.Widgets.BoxElement;
+  private marketAnalysisBox: BlessedTypes.Widgets.BoxElement;
+  private transactionsBox: BlessedTypes.Widgets.BoxElement;
+  private statusBox: BlessedTypes.Widgets.BoxElement;
+  private helpBox: BlessedTypes.Widgets.BoxElement;
 
   private engine: TradingEngine | null = null;
-  private alertManager: AlertManager;
   private recentTrades: TradeCycle[] = [];
   private recentAlerts: Alert[] = [];
   private priceHistory: PriceSnapshot[] = [];
-  private maxPriceHistory = 60; // 保留60个价格点用于绘图
-  private maxRecentAlerts = 10; // 最多显示10条告警
+  private maxPriceHistory = 60;
+  private maxRecentAlerts = 10;
+
+  // 模拟持仓数据 (实际应从数据库/状态获取)
+  private positions = {
+    up: { shares: 0, avgCost: 0, totalCost: 0 },
+    down: { shares: 0, avgCost: 0, totalCost: 0 },
+  };
 
   constructor() {
     // 创建屏幕
@@ -49,25 +74,27 @@ export class Dashboard {
       fullUnicode: true,
     });
 
-    // 获取 AlertManager 实例
-    this.alertManager = getAlertManager();
+    // AlertManager 实例可通过 getAlertManager() 获取
+    void getAlertManager;
 
-    // 创建布局
+    // 创建新布局
     this.headerBox = this.createHeaderBox();
-    this.priceBox = this.createPriceBox();
+    this.marketInfoBox = this.createMarketInfoBox();
+    this.orderBookBox = this.createOrderBookBox();
+    this.positionsBox = this.createPositionsBox();
+    this.marketAnalysisBox = this.createMarketAnalysisBox();
+    this.transactionsBox = this.createTransactionsBox();
     this.statusBox = this.createStatusBox();
-    this.alertBox = this.createAlertBox();
-    this.logBox = this.createLogBox();
-    this.tradesBox = this.createTradesBox();
     this.helpBox = this.createHelpBox();
 
     // 添加到屏幕
     this.screen.append(this.headerBox);
-    this.screen.append(this.priceBox);
+    this.screen.append(this.marketInfoBox);
+    this.screen.append(this.orderBookBox);
+    this.screen.append(this.positionsBox);
+    this.screen.append(this.marketAnalysisBox);
+    this.screen.append(this.transactionsBox);
     this.screen.append(this.statusBox);
-    this.screen.append(this.alertBox);
-    this.screen.append(this.logBox);
-    this.screen.append(this.tradesBox);
     this.screen.append(this.helpBox);
 
     // 设置键盘快捷键
@@ -78,34 +105,37 @@ export class Dashboard {
   }
 
   /**
-   * 创建顶部标题栏
+   * 创建顶部标题栏 - 参考图2风格
    */
-  private createHeaderBox(): blessed.Widgets.BoxElement {
+  private createHeaderBox(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
       top: 0,
       left: 0,
       width: '100%',
       height: 3,
       tags: true,
-      content: '{center}{bold}Polymarket Dump & Hedge Bot{/bold}{/center}',
+      content: '{bold} ⓑ POLYMARKET DUMP & HEDGE BOT v0.3{/bold}                                                    {green-fg}● MONITORING{/green-fg}',
       style: {
-        fg: 'white',
-        bg: 'blue',
+        fg: THEME.primary,
+        bg: 'black',
         bold: true,
       },
+      border: {
+        type: 'line',
+      },
     });
   }
 
   /**
-   * 创建价格显示区域
+   * 创建持仓显示区域 - 参考图2的 POSITIONS 区块
    */
-  private createPriceBox(): blessed.Widgets.BoxElement {
+  private createPositionsBox(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
-      top: 3,
+      top: 26,
       left: 0,
       width: '50%',
-      height: 10,
-      label: ' 📊 实时价格 ',
+      height: 12,
+      label: ' ═ POSITIONS ═ ',
       tags: true,
       border: {
         type: 'line',
@@ -113,22 +143,25 @@ export class Dashboard {
       style: {
         fg: 'white',
         border: {
-          fg: 'cyan',
+          fg: THEME.border,
+        },
+        label: {
+          fg: THEME.primary,
         },
       },
     });
   }
 
   /**
-   * 创建状态显示区域
+   * 创建市场分析区域 - 核心套利信息展示（增大高度以显示完整信息）
    */
-  private createStatusBox(): blessed.Widgets.BoxElement {
+  private createMarketAnalysisBox(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
-      top: 3,
+      top: 26,
       left: '50%',
-      width: '25%',
-      height: 10,
-      label: ' ⚙️ 系统状态 ',
+      width: '50%',
+      height: 12,
+      label: ' ═ MARKET ANALYSIS ═ ',
       tags: true,
       border: {
         type: 'line',
@@ -136,47 +169,25 @@ export class Dashboard {
       style: {
         fg: 'white',
         border: {
-          fg: 'cyan',
+          fg: THEME.border,
+        },
+        label: {
+          fg: THEME.primary,
         },
       },
     });
   }
 
   /**
-   * 创建告警显示区域
+   * 创建最近交易区域
    */
-  private createAlertBox(): blessed.Widgets.BoxElement {
+  private createTransactionsBox(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
-      top: 3,
-      left: '75%',
-      width: '25%',
-      height: 10,
-      label: ' 🔔 告警 ',
-      tags: true,
-      border: {
-        type: 'line',
-      },
-      style: {
-        fg: 'white',
-        border: {
-          fg: 'magenta',
-        },
-      },
-      scrollable: true,
-      mouse: true,
-    });
-  }
-
-  /**
-   * 创建日志显示区域
-   */
-  private createLogBox(): blessed.Widgets.Log {
-    return blessed.log({
-      top: 13,
+      top: 38,
       left: 0,
-      width: '60%',
-      height: '100%-16',
-      label: ' 📝 日志 ',
+      width: '70%',
+      height: '100%-41',
+      label: ' ═ 📊 RECENT TRANSACTIONS ═ ',
       tags: true,
       border: {
         type: 'line',
@@ -184,30 +195,27 @@ export class Dashboard {
       style: {
         fg: 'white',
         border: {
-          fg: 'green',
+          fg: THEME.border,
+        },
+        label: {
+          fg: THEME.primary,
         },
       },
       scrollable: true,
-      scrollbar: {
-        ch: ' ',
-        style: {
-          bg: 'yellow',
-        },
-      },
       mouse: true,
     });
   }
 
   /**
-   * 创建交易记录区域
+   * 创建状态区域
    */
-  private createTradesBox(): blessed.Widgets.ListElement {
-    return blessed.list({
-      top: 13,
-      left: '60%',
-      width: '40%',
-      height: '100%-16',
-      label: ' 💰 最近交易 ',
+  private createStatusBox(): BlessedTypes.Widgets.BoxElement {
+    return blessed.box({
+      top: 38,
+      left: '70%',
+      width: '30%',
+      height: '100%-41',
+      label: ' ═ STATUS ═ ',
       tags: true,
       border: {
         type: 'line',
@@ -215,33 +223,84 @@ export class Dashboard {
       style: {
         fg: 'white',
         border: {
-          fg: 'yellow',
+          fg: THEME.border,
         },
-        selected: {
-          bg: 'blue',
+        label: {
+          fg: THEME.primary,
         },
       },
-      scrollable: true,
-      mouse: true,
-      keys: true,
-      items: [],
     });
   }
 
   /**
    * 创建帮助栏
    */
-  private createHelpBox(): blessed.Widgets.BoxElement {
+  private createHelpBox(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
       bottom: 0,
       left: 0,
       width: '100%',
       height: 3,
       tags: true,
-      content: ' {cyan-fg}q{/cyan-fg}:退出 | {cyan-fg}s{/cyan-fg}:开始/停止 | {cyan-fg}u{/cyan-fg}:买UP | {cyan-fg}d{/cyan-fg}:买DOWN | {cyan-fg}p{/cyan-fg}:参数 | {cyan-fg}r{/cyan-fg}:刷新 | {cyan-fg}c{/cyan-fg}:清除日志 ',
+      content: ' {cyan-fg}[Q]{/cyan-fg} Quit  {cyan-fg}[S]{/cyan-fg} Start/Stop  {cyan-fg}[U]{/cyan-fg} Buy UP  {cyan-fg}[D]{/cyan-fg} Buy DOWN  {cyan-fg}[P]{/cyan-fg} Params  {cyan-fg}[R]{/cyan-fg} Refresh ',
       style: {
         fg: 'white',
         bg: 'black',
+      },
+      border: {
+        type: 'line',
+      },
+    });
+  }
+
+  /**
+   * 创建市场信息区域 - 显示 Polymarket Market ID 和 Token IDs
+   */
+  private createMarketInfoBox(): BlessedTypes.Widgets.BoxElement {
+    return blessed.box({
+      top: 3,
+      left: 0,
+      width: '100%',
+      height: 7,
+      label: ' ═ MARKET INFO ═ ',
+      tags: true,
+      border: {
+        type: 'line',
+      },
+      style: {
+        fg: 'white',
+        border: {
+          fg: THEME.border,
+        },
+        label: {
+          fg: THEME.primary,
+        },
+      },
+    });
+  }
+
+  /**
+   * 创建订单簿显示区域 - 参考图的 Order Book 风格
+   */
+  private createOrderBookBox(): BlessedTypes.Widgets.BoxElement {
+    return blessed.box({
+      top: 10,
+      left: 0,
+      width: '100%',
+      height: 16,
+      label: ' ═ ORDER BOOK ═ ',
+      tags: true,
+      border: {
+        type: 'line',
+      },
+      style: {
+        fg: 'white',
+        border: {
+          fg: THEME.warning,
+        },
+        label: {
+          fg: THEME.warning,
+        },
       },
     });
   }
@@ -252,7 +311,6 @@ export class Dashboard {
   private setupKeyBindings(): void {
     // 退出
     this.screen.key(['q', 'C-c'], () => {
-      this.log('{yellow-fg}正在退出...{/yellow-fg}');
       this.screen.destroy();
       process.emit('SIGINT', 'SIGINT');
     });
@@ -262,10 +320,8 @@ export class Dashboard {
       if (!this.engine) return;
 
       if (this.engine.isEngineRunning()) {
-        this.log('{yellow-fg}停止交易引擎...{/yellow-fg}');
         await this.engine.stop();
       } else {
-        this.log('{green-fg}启动交易引擎...{/green-fg}');
         await this.engine.start();
       }
       this.updateStatus();
@@ -292,23 +348,6 @@ export class Dashboard {
     // 刷新
     this.screen.key(['r'], () => {
       this.updateAll();
-      this.log('{cyan-fg}界面已刷新{/cyan-fg}');
-    });
-
-    // 清除日志
-    this.screen.key(['c'], () => {
-      this.logBox.setContent('');
-      this.screen.render();
-    });
-
-    // 聚焦日志区域滚动
-    this.screen.key(['l'], () => {
-      this.logBox.focus();
-    });
-
-    // 聚焦交易区域
-    this.screen.key(['t'], () => {
-      this.tradesBox.focus();
     });
   }
 
@@ -322,66 +361,43 @@ export class Dashboard {
       if (this.priceHistory.length > this.maxPriceHistory) {
         this.priceHistory.shift();
       }
-      this.updatePrice(snapshot);
+      this.updateMarketInfo();
+      this.updateOrderBook();
+      this.updateMarketAnalysis(snapshot);
+      this.updatePositions(snapshot);
     });
 
     // 暴跌信号
     eventBus.onEvent('price:dump_detected', (signal: DumpSignal) => {
-      this.log(
-        `{red-fg}🚨 暴跌! ${signal.side} ${signal.previousPrice.toFixed(4)} → ${signal.price.toFixed(4)} ` +
-        `(${(signal.dropPct * 100).toFixed(2)}%){/red-fg}`
-      );
+      this.addTransaction('DUMP', signal.side, signal.price, 0, `${(signal.dropPct * 100).toFixed(2)}% drop`);
     });
 
-    // 订单事件
-    eventBus.onEvent('order:submitted', (order: Order) => {
-      this.log(`{blue-fg}📤 订单提交: ${order.side} ${order.shares} @ ${order.price?.toFixed(4) || 'MKT'}{/blue-fg}`);
-    });
-
+    // 订单成交
     eventBus.onEvent('order:filled', (order: Order) => {
-      this.log(`{green-fg}✅ 订单成交: ${order.side} @ ${order.avgFillPrice?.toFixed(4)}{/green-fg}`);
-    });
-
-    eventBus.onEvent('order:error', (data: { order: Order; error: Error }) => {
-      this.log(`{red-fg}❌ 订单失败: ${data.error.message}{/red-fg}`);
+      this.addTransaction('FILL', order.side, order.avgFillPrice || 0, order.shares, order.id);
     });
 
     // 交易周期完成
-    eventBus.onEvent('cycle:completed', ({ cycle, profit }: { cycle: TradeCycle; profit: number }) => {
+    eventBus.onEvent('cycle:completed', ({ cycle }: { cycle: TradeCycle; profit: number }) => {
       this.recentTrades.unshift(cycle);
       if (this.recentTrades.length > 20) {
         this.recentTrades.pop();
       }
-      this.updateTrades();
-      this.log(
-        `{green-fg}🎉 交易完成! 净利润: $${profit.toFixed(2)}{/green-fg}`
-      );
     });
 
     // WebSocket 事件
     eventBus.onEvent('ws:connected', () => {
-      this.log('{green-fg}📡 WebSocket 已连接{/green-fg}');
       this.updateStatus();
     });
 
     eventBus.onEvent('ws:disconnected', () => {
-      this.log('{yellow-fg}📡 WebSocket 断开{/yellow-fg}');
       this.updateStatus();
-    });
-
-    eventBus.onEvent('ws:reconnecting', ({ attempt }) => {
-      this.log(`{yellow-fg}📡 重连中... #${attempt}{/yellow-fg}`);
     });
 
     // 回合事件
-    eventBus.onEvent('round:new', (data: { roundSlug: string; startTime: number }) => {
-      this.log(`{cyan-fg}📅 新回合: ${data.roundSlug}{/cyan-fg}`);
+    eventBus.onEvent('round:new', () => {
       this.updateStatus();
-    });
-
-    // 错误
-    eventBus.onEvent('system:error', (error: Error) => {
-      this.log(`{red-fg}❌ 错误: ${error.message}{/red-fg}`);
+      this.updateMarketInfo();
     });
 
     // 告警事件
@@ -390,7 +406,6 @@ export class Dashboard {
       if (this.recentAlerts.length > this.maxRecentAlerts) {
         this.recentAlerts.pop();
       }
-      this.updateAlerts();
     });
   }
 
@@ -400,31 +415,241 @@ export class Dashboard {
   public setEngine(engine: TradingEngine): void {
     this.engine = engine;
     this.updateStatus();
+    this.updateMarketInfo();
   }
 
   /**
-   * 更新价格显示
+   * 更新持仓显示 - 紧凑版
    */
-  private updatePrice(snapshot: PriceSnapshot): void {
-    const sum = snapshot.upBestAsk + snapshot.downBestAsk;
-    const sumColor = sum <= 0.95 ? 'green' : sum <= 0.98 ? 'yellow' : 'red';
+  private updatePositions(snapshot: PriceSnapshot): void {
+    const upPrice = snapshot.upBestAsk || snapshot.upBestBid || 0;
+    const downPrice = snapshot.downBestAsk || snapshot.downBestBid || 0;
 
-    // 简单的 ASCII 价格柱状图
-    const upBar = '█'.repeat(Math.floor(snapshot.upBestAsk * 20));
-    const downBar = '█'.repeat(Math.floor(snapshot.downBestAsk * 20));
+    // 计算当前价值和盈亏
+    const upPnL = this.positions.up.shares * upPrice - this.positions.up.totalCost;
+    const downPnL = this.positions.down.shares * downPrice - this.positions.down.totalCost;
+    const totalPnL = upPnL + downPnL;
+
+    const formatPnL = (pnl: number) => {
+      if (pnl >= 0) return `{green-fg}+$${pnl.toFixed(2)}{/green-fg}`;
+      return `{red-fg}-$${Math.abs(pnl).toFixed(2)}{/red-fg}`;
+    };
 
     const content = [
       '',
-      `  UP   Price: {bold}${snapshot.upBestAsk.toFixed(4)}{/bold}`,
-      `  {green-fg}${upBar}{/green-fg}`,
+      `  {green-fg}▲ UP{/green-fg}   ${this.positions.up.shares} @ ${upPrice.toFixed(3)}`,
+      `  {red-fg}▼ DOWN{/red-fg} ${this.positions.down.shares} @ ${downPrice.toFixed(3)}`,
       '',
-      `  DOWN Price: {bold}${snapshot.downBestAsk.toFixed(4)}{/bold}`,
-      `  {red-fg}${downBar}{/red-fg}`,
-      '',
-      `  SUM: {${sumColor}-fg}{bold}${sum.toFixed(4)}{/bold}{/${sumColor}-fg}`,
+      `  {bold}Total PnL:{/bold} ${formatPnL(totalPnL)}`,
+      `  {gray-fg}Vol: $${(this.positions.up.totalCost + this.positions.down.totalCost).toFixed(0)}{/gray-fg}`,
     ].join('\n');
 
-    this.priceBox.setContent(content);
+    this.positionsBox.setContent(content);
+    this.screen.render();
+  }
+
+  /**
+   * 更新市场分析 - 核心套利信息展示（完整版，含可视化进度条）
+   */
+  private updateMarketAnalysis(snapshot: PriceSnapshot): void {
+    const upAsk = snapshot.upBestAsk || 0;
+    const downAsk = snapshot.downBestAsk || 0;
+    const upBid = snapshot.upBestBid || 0;
+    const downBid = snapshot.downBestBid || 0;
+
+    // 计算关键指标
+    const combined = upAsk + downAsk;
+    const sumTarget = this.engine?.getConfig().sumTarget || 0.95;
+    const arbOpportunity = combined <= sumTarget;
+    const config = this.engine?.getConfig();
+    const shares = config?.shares || 0;
+    const potentialProfit = arbOpportunity ? (1 - combined) * shares : 0;
+
+    // 计算价差
+    const spread = 1 - combined;
+    const spreadPct = (spread * 100).toFixed(2);
+
+    // 计算 Delta (UP - DOWN 价格差异)
+    const delta = upAsk - downAsk;
+    const deltaPct = (delta * 100).toFixed(1);
+
+    // 获取交易周期数
+    const cycles = this.recentTrades.length;
+    const totalPnL = this.recentTrades.reduce((sum, c) => sum + (c.profit || 0), 0);
+
+    // 套利状态颜色
+    const combinedColor = arbOpportunity ? 'green' : combined <= 1.0 ? 'yellow' : 'red';
+
+    // 创建可视化进度条 (40 字符宽)
+    const barWidth = 40;
+    const fillRatio = Math.min(Math.max((1 - combined) / (1 - sumTarget), 0), 1);
+    const filledWidth = Math.round(fillRatio * barWidth);
+    const emptyWidth = barWidth - filledWidth;
+    const progressBar = arbOpportunity
+      ? `{green-fg}${'█'.repeat(filledWidth)}${'░'.repeat(emptyWidth)}{/green-fg}`
+      : `{yellow-fg}${'░'.repeat(barWidth)}{/yellow-fg}`;
+
+    const content = [
+      '',
+      `  {green-fg}▲ UP:{/green-fg}  ${(upAsk * 100).toFixed(2)}%    {bold}Combined:{/bold} {${combinedColor}-fg}${combined.toFixed(4)}{/${combinedColor}-fg}    {bold}Spread:{/bold} ${spreadPct}%`,
+      `  {red-fg}▼ DOWN:{/red-fg} ${(downAsk * 100).toFixed(2)}%    {bold}Target:{/bold}   ${sumTarget}              `,
+      '',
+      `  ${progressBar}`,
+      '',
+      `  {gray-fg}Bid:{/gray-fg} UP ${(upBid * 100).toFixed(2)}% | DOWN ${(downBid * 100).toFixed(2)}%    {gray-fg}Delta:{/gray-fg} ${deltaPct}%`,
+      `  {gray-fg}Pairs:{/gray-fg} ${cycles}    {gray-fg}PnL:{/gray-fg} ${totalPnL >= 0 ? '{green-fg}' : '{red-fg}'}$${totalPnL.toFixed(2)}${totalPnL >= 0 ? '{/green-fg}' : '{/red-fg}'}`,
+      '',
+      arbOpportunity
+        ? `  {green-fg}{bold}🎯 ARBITRAGE OPPORTUNITY! +$${potentialProfit.toFixed(2)}{/bold}{/green-fg}`
+        : `  {gray-fg}Monitoring for arbitrage...{/gray-fg}`,
+    ].join('\n');
+
+    this.marketAnalysisBox.setContent(content);
+    this.screen.render();
+  }
+
+  /**
+   * 更新市场信息显示 - 显示 Polymarket Market ID 和 Token IDs
+   * 参考图风格：显示市场名称、剩余时间、UP/DOWN 价格
+   */
+  private updateMarketInfo(): void {
+    if (!this.engine) {
+      this.marketInfoBox.setContent('\n  {gray-fg}等待引擎初始化...{/gray-fg}');
+      this.screen.render();
+      return;
+    }
+
+    const roundManager = this.engine.getRoundManager();
+    const currentRound = roundManager.getCurrentRoundSlug();
+    const upToken = roundManager.getUpTokenId();
+    const downToken = roundManager.getDownTokenId();
+    const latestPrice = this.priceHistory.length > 0 ? this.priceHistory[this.priceHistory.length - 1] : null;
+
+    // 截断 Token ID 显示
+    const formatToken = (token: string | null): string => {
+      if (!token) return '{gray-fg}N/A{/gray-fg}';
+      return `{yellow-fg}${token.substring(0, 12)}...${token.slice(-8)}{/yellow-fg}`;
+    };
+
+    // 计算剩余时间 (秒)
+    const remainingSecs = roundManager.getSecondsRemaining();
+    const minutes = Math.floor(remainingSecs / 60);
+    const seconds = remainingSecs % 60;
+    const timeStr = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    const timeColor = remainingSecs < 60 ? 'red' : remainingSecs < 180 ? 'yellow' : 'green';
+
+    // UP/DOWN 价格百分比
+    const upPrice = latestPrice?.upBestAsk || 0;
+    const downPrice = latestPrice?.downBestAsk || 0;
+    const upPct = (upPrice * 100).toFixed(1);
+    const downPct = (downPrice * 100).toFixed(1);
+
+    const content = [
+      '',
+      `  {bold}Market:{/bold} {cyan-fg}${currentRound || 'BTC Up/Down 15m'}{/cyan-fg}          Time: {${timeColor}-fg}${timeStr}{/${timeColor}-fg}`,
+      `  {green-fg}▲ UP: ${upPct}%{/green-fg}              {red-fg}▼ DOWN: ${downPct}%{/red-fg}`,
+      '',
+      `  {gray-fg}UP Token:{/gray-fg}   ${formatToken(upToken)}    {gray-fg}DOWN Token:{/gray-fg} ${formatToken(downToken)}`,
+    ].join('\n');
+
+    this.marketInfoBox.setContent(content);
+    this.screen.render();
+  }
+
+  /**
+   * 更新订单簿显示 - 参考图的 Order Book 风格
+   * 左侧显示 UP 的 BIDS/ASKS，右侧显示 DOWN 的 BIDS/ASKS
+   */
+  private updateOrderBook(): void {
+    if (!this.engine) {
+      this.orderBookBox.setContent('\n  {gray-fg}Waiting for data...{/gray-fg}');
+      this.screen.render();
+      return;
+    }
+
+    const marketWatcher = this.engine.getMarketWatcher();
+    const snapshot: OrderBookSnapshot | null = marketWatcher.getOrderBookSnapshot();
+
+    if (!snapshot) {
+      this.orderBookBox.setContent('\n  {gray-fg}Waiting for order book data...{/gray-fg}');
+      this.screen.render();
+      return;
+    }
+
+    const upBook = snapshot.up;
+    const downBook = snapshot.down;
+
+    // 格式化订单簿行
+    const formatLevel = (price: number, size: number, color: string): string => {
+      const pricePct = `${(price * 100).toFixed(1)}%`;
+      const sizeStr = size.toFixed(0);
+      return `{${color}-fg}${pricePct.padStart(6)}{/${color}-fg} @ ${sizeStr.padStart(5)}`;
+    };
+
+    // 计算 UP/DOWN 的 Best Bid/Ask
+    const upBestBid = upBook.bids[0]?.price || 0;
+    const upBestAsk = upBook.asks[0]?.price || 0;
+    const downBestBid = downBook.bids[0]?.price || 0;
+    const downBestAsk = downBook.asks[0]?.price || 0;
+
+    // 计算总量
+    const upBidTotal = upBook.bids.reduce((sum, l) => sum + l.size, 0);
+    const upAskTotal = upBook.asks.reduce((sum, l) => sum + l.size, 0);
+    const downBidTotal = downBook.bids.reduce((sum, l) => sum + l.size, 0);
+    const downAskTotal = downBook.asks.reduce((sum, l) => sum + l.size, 0);
+
+    const lines: string[] = [''];
+
+    // 标题行
+    lines.push(`  {bold}{green-fg}UP Order Book{/green-fg}{/bold}                          {bold}{red-fg}DOWN Order Book{/red-fg}{/bold}`);
+    lines.push(`  Bid: ${(upBestBid * 100).toFixed(1)}% | Ask: ${(upBestAsk * 100).toFixed(1)}%              Bid: ${(downBestBid * 100).toFixed(1)}% | Ask: ${(downBestAsk * 100).toFixed(1)}%`);
+    lines.push('');
+
+    // 表头
+    lines.push(`  {cyan-fg}BIDS (${upBidTotal.toFixed(0).padStart(4)}){/cyan-fg}    {cyan-fg}ASKS (${upAskTotal.toFixed(0).padStart(4)}){/cyan-fg}       {cyan-fg}BIDS (${downBidTotal.toFixed(0).padStart(4)}){/cyan-fg}    {cyan-fg}ASKS (${downAskTotal.toFixed(0).padStart(4)}){/cyan-fg}`);
+
+    // 显示最多 10 档
+    const maxLevels = 10;
+    for (let i = 0; i < maxLevels; i++) {
+      const upBid = upBook.bids[i];
+      const upAsk = upBook.asks[i];
+      const downBid = downBook.bids[i];
+      const downAsk = downBook.asks[i];
+
+      const upBidStr = upBid ? formatLevel(upBid.price, upBid.size, 'green') : '        -     ';
+      const upAskStr = upAsk ? formatLevel(upAsk.price, upAsk.size, 'red') : '        -     ';
+      const downBidStr = downBid ? formatLevel(downBid.price, downBid.size, 'green') : '        -     ';
+      const downAskStr = downAsk ? formatLevel(downAsk.price, downAsk.size, 'red') : '        -     ';
+
+      lines.push(`  ${upBidStr}   ${upAskStr}      ${downBidStr}   ${downAskStr}`);
+    }
+
+    this.orderBookBox.setContent(lines.join('\n'));
+    this.screen.render();
+  }
+
+  /**
+   * 添加交易记录
+   */
+  private addTransaction(_type: string, side: Side, price: number, size: number, info: string): void {
+    const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const sideColor = side === 'UP' ? 'green' : 'red';
+    const sideSymbol = side === 'UP' ? '▲' : '▼';
+
+    // 获取当前内容并添加新行
+    const currentContent = this.transactionsBox.getContent();
+    const newLine = `  {gray-fg}${time}{/gray-fg}  {${sideColor}-fg}${sideSymbol} ${side}{/${sideColor}-fg}  $${price.toFixed(4)}  ${size}$  {gray-fg}${info.substring(0, 20)}...{/gray-fg}`;
+
+    // 保持最近 20 条
+    const lines = currentContent.split('\n').filter(l => l.trim());
+    lines.push(newLine);
+    if (lines.length > 20) {
+      lines.shift();
+    }
+
+    // 添加表头
+    const header = '\n  {cyan-fg}TIME         SIDE     PRICE       SIZE      TX HASH{/cyan-fg}\n';
+    this.transactionsBox.setContent(header + lines.join('\n'));
     this.screen.render();
   }
 
@@ -440,8 +665,8 @@ export class Dashboard {
 
     const isRunning = this.engine.isEngineRunning();
     const currentState = this.engine.getStateMachine().getCurrentStatus();
-    const currentCycle = this.engine.getStateMachine().getCurrentCycle();
     const currentRound = this.engine.getRoundManager().getCurrentRoundSlug();
+    const config = this.engine.getConfig();
 
     const stateColor: Record<CycleStatus, string> = {
       'IDLE': 'white',
@@ -456,85 +681,29 @@ export class Dashboard {
 
     const content = [
       '',
-      `  运行状态: ${isRunning ? '{green-fg}运行中 ✅{/green-fg}' : '{red-fg}已停止 ❌{/red-fg}'}`,
-      `  当前状态: {${stateColor[currentState]}-fg}{bold}${currentState}{/bold}{/${stateColor[currentState]}-fg}`,
-      `  当前回合: ${currentRound || 'N/A'}`,
-      currentCycle ? `  活跃周期: ${currentCycle.id.slice(0, 8)}...` : '',
+      `  {bold}Engine:{/bold} ${isRunning ? '{green-fg}● RUNNING{/green-fg}' : '{red-fg}○ STOPPED{/red-fg}'}`,
+      `  {bold}State:{/bold}  {${stateColor[currentState]}-fg}${currentState}{/${stateColor[currentState]}-fg}`,
+      `  {bold}Market:{/bold} ${currentRound || 'N/A'}`,
       '',
-      `  {gray-fg}更新时间: ${new Date().toLocaleTimeString()}{/gray-fg}`,
-    ].filter(Boolean).join('\n');
+      '  {cyan-fg}─── Config ───{/cyan-fg}',
+      `  Shares: {bold}${config.shares}{/bold}`,
+      `  Target: {bold}${config.sumTarget}{/bold}`,
+      `  Move %: {bold}${(config.movePct * 100).toFixed(1)}%{/bold}`,
+      `  Window: {bold}${config.windowMin}m{/bold}`,
+      '',
+      `  {gray-fg}Mode: ${config.dryRun ? 'DRY RUN' : 'LIVE'}{/gray-fg}`,
+      `  {gray-fg}${new Date().toLocaleTimeString()}{/gray-fg}`,
+    ].join('\n');
 
     this.statusBox.setContent(content);
     this.screen.render();
   }
 
   /**
-   * 更新交易记录
-   */
-  private updateTrades(): void {
-    const items = this.recentTrades.map(trade => {
-      const profit = trade.profit || 0;
-      const profitStr = profit >= 0
-        ? `+$${profit.toFixed(2)}`
-        : `-$${Math.abs(profit).toFixed(2)}`;
-      const color = profit >= 0 ? 'green' : 'red';
-
-      return `{${color}-fg}${trade.leg1?.side || 'N/A'} ${profitStr}{/${color}-fg}`;
-    });
-
-    this.tradesBox.setItems(items);
-    this.screen.render();
-  }
-
-  /**
-   * 更新告警显示
-   */
-  private updateAlerts(): void {
-    const severityColors: Record<string, string> = {
-      'critical': 'red',
-      'warning': 'yellow',
-      'info': 'cyan',
-    };
-
-    const severityIcons: Record<string, string> = {
-      'critical': '🚨',
-      'warning': '⚠️',
-      'info': 'ℹ️',
-    };
-
-    const stats = this.alertManager.getStats();
-    const lines: string[] = [];
-
-    // 显示统计
-    lines.push(`  今日: {bold}${stats.todayCount}{/bold}`);
-    lines.push(`  总计: {gray-fg}${stats.totalCount}{/gray-fg}`);
-    lines.push('');
-
-    // 显示最近告警
-    if (this.recentAlerts.length === 0) {
-      lines.push('  {gray-fg}暂无告警{/gray-fg}');
-    } else {
-      for (const alert of this.recentAlerts.slice(0, 5)) {
-        const color = severityColors[alert.severity] || 'white';
-        const icon = severityIcons[alert.severity] || '•';
-        const time = new Date(alert.timestamp).toLocaleTimeString('zh-CN', {
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-        lines.push(`  {${color}-fg}${icon} ${time}{/${color}-fg}`);
-      }
-    }
-
-    this.alertBox.setContent(lines.join('\n'));
-    this.screen.render();
-  }
-
-  /**
-   * 添加日志
+   * 添加日志 (保留兼容性)
    */
   public log(message: string): void {
-    const timestamp = new Date().toLocaleTimeString();
-    this.logBox.log(`{gray-fg}[${timestamp}]{/gray-fg} ${message}`);
+    logger.info(message.replace(/\{[^}]+\}/g, '')); // 移除标签记录到日志
   }
 
   /**
@@ -542,10 +711,12 @@ export class Dashboard {
    */
   private updateAll(): void {
     this.updateStatus();
-    this.updateTrades();
-    this.updateAlerts();
+    this.updateMarketInfo();
+    this.updateOrderBook();
     if (this.priceHistory.length > 0) {
-      this.updatePrice(this.priceHistory[this.priceHistory.length - 1]);
+      const latest = this.priceHistory[this.priceHistory.length - 1];
+      this.updateMarketAnalysis(latest);
+      this.updatePositions(latest);
     }
   }
 
@@ -553,15 +724,19 @@ export class Dashboard {
    * 启动 Dashboard
    */
   public start(): void {
-    this.log('{green-fg}Dashboard 启动{/green-fg}');
     this.updateStatus();
-    this.updateAlerts();
+    this.updateMarketInfo();
+    this.updateOrderBook();
+    this.updateAll();
     this.screen.render();
 
-    // 定期刷新状态和告警
+    // 初始化交易列表表头
+    const header = '\n  {cyan-fg}TIME         SIDE     PRICE       SIZE      TX HASH{/cyan-fg}\n';
+    this.transactionsBox.setContent(header);
+
+    // 定期刷新状态
     setInterval(() => {
       this.updateStatus();
-      this.updateAlerts();
     }, 1000);
   }
 
@@ -611,25 +786,35 @@ export class Dashboard {
       this.screen.render();
 
       if (err || !value) {
-        this.log('{yellow-fg}买入取消{/yellow-fg}');
         return;
       }
 
       const shares = parseFloat(value);
       if (isNaN(shares) || shares <= 0) {
-        this.log('{red-fg}无效的份数{/red-fg}');
         return;
       }
 
-      this.log(`{cyan-fg}正在买入 ${side} ${shares} 份...{/cyan-fg}`);
-
       try {
         await this.engine!.manualBuy(side, shares, true);
-        this.log(`{green-fg}买入成功: ${side} ${shares} 份{/green-fg}`);
+
+        // 更新模拟持仓
+        const price = side === 'UP'
+          ? (this.priceHistory[this.priceHistory.length - 1]?.upBestAsk || 0)
+          : (this.priceHistory[this.priceHistory.length - 1]?.downBestAsk || 0);
+
+        if (side === 'UP') {
+          this.positions.up.shares += shares;
+          this.positions.up.totalCost += shares * price;
+          this.positions.up.avgCost = this.positions.up.totalCost / this.positions.up.shares;
+        } else {
+          this.positions.down.shares += shares;
+          this.positions.down.totalCost += shares * price;
+          this.positions.down.avgCost = this.positions.down.totalCost / this.positions.down.shares;
+        }
+
+        this.addTransaction('BUY', side, price, shares, 'manual');
       } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        this.log(`{red-fg}买入失败: ${errorMsg}{/red-fg}`);
-        logger.error('Manual buy failed', { side, shares, error: errorMsg });
+        logger.error('Manual buy failed', { side, shares, error });
       }
     });
 
@@ -658,7 +843,7 @@ export class Dashboard {
         fg: 'white',
         bg: 'black',
         border: {
-          fg: 'cyan',
+          fg: THEME.primary,
         },
       },
     });
@@ -684,9 +869,7 @@ export class Dashboard {
       style: {
         fg: 'white',
         bg: 'blue',
-        focus: {
-          bg: 'green',
-        },
+        focus: { bg: 'green' },
       },
     });
 
@@ -711,9 +894,7 @@ export class Dashboard {
       style: {
         fg: 'white',
         bg: 'blue',
-        focus: {
-          bg: 'green',
-        },
+        focus: { bg: 'green' },
       },
     });
 
@@ -738,9 +919,7 @@ export class Dashboard {
       style: {
         fg: 'white',
         bg: 'blue',
-        focus: {
-          bg: 'green',
-        },
+        focus: { bg: 'green' },
       },
     });
 
@@ -765,9 +944,7 @@ export class Dashboard {
       style: {
         fg: 'white',
         bg: 'blue',
-        focus: {
-          bg: 'green',
-        },
+        focus: { bg: 'green' },
       },
     });
 
@@ -783,9 +960,7 @@ export class Dashboard {
       style: {
         fg: 'white',
         bg: 'green',
-        focus: {
-          bg: 'cyan',
-        },
+        focus: { bg: 'cyan' },
       },
     });
 
@@ -800,9 +975,7 @@ export class Dashboard {
       style: {
         fg: 'white',
         bg: 'red',
-        focus: {
-          bg: 'magenta',
-        },
+        focus: { bg: 'magenta' },
       },
     });
 
@@ -814,22 +987,10 @@ export class Dashboard {
       const newWindowMin = parseFloat(windowMinInput.getValue() || String(config.windowMin));
 
       // 验证
-      if (isNaN(newShares) || newShares <= 0) {
-        this.log('{red-fg}无效的份数{/red-fg}');
-        return;
-      }
-      if (isNaN(newSumTarget) || newSumTarget < 0.5 || newSumTarget > 1.0) {
-        this.log('{red-fg}sumTarget 必须在 0.5-1.0 之间{/red-fg}');
-        return;
-      }
-      if (isNaN(newMovePct) || newMovePct < 0.01 || newMovePct > 0.30) {
-        this.log('{red-fg}movePct 必须在 1%-30% 之间{/red-fg}');
-        return;
-      }
-      if (isNaN(newWindowMin) || newWindowMin < 1 || newWindowMin > 15) {
-        this.log('{red-fg}windowMin 必须在 1-15 之间{/red-fg}');
-        return;
-      }
+      if (isNaN(newShares) || newShares <= 0) return;
+      if (isNaN(newSumTarget) || newSumTarget < 0.5 || newSumTarget > 1.0) return;
+      if (isNaN(newMovePct) || newMovePct < 0.01 || newMovePct > 0.30) return;
+      if (isNaN(newWindowMin) || newWindowMin < 1 || newWindowMin > 15) return;
 
       // 更新配置
       this.engine!.updateConfig({
@@ -839,14 +1000,12 @@ export class Dashboard {
         windowMin: newWindowMin,
       });
 
-      this.log(`{green-fg}参数已更新: shares=${newShares}, sumTarget=${newSumTarget}, movePct=${(newMovePct * 100).toFixed(1)}%, windowMin=${newWindowMin}{/green-fg}`);
-
       form.destroy();
       this.screen.render();
+      this.updateStatus();
     });
 
     cancelBtn.on('press', () => {
-      this.log('{yellow-fg}参数调整取消{/yellow-fg}');
       form.destroy();
       this.screen.render();
     });
@@ -857,9 +1016,7 @@ export class Dashboard {
       this.screen.render();
     });
 
-    // Tab 切换焦点
     sharesInput.focus();
-
     this.screen.render();
   }
 }

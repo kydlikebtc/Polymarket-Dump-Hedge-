@@ -48,6 +48,7 @@ export class MarketWatcher {
   private upTokenId: string = '';
   private downTokenId: string = '';
   private readonly ORDER_BOOK_DEPTH = 10; // 保留前10档
+  private lastOrderBookSnapshot: OrderBookSnapshot | null = null;
 
   // 心跳配置
   private readonly HEARTBEAT_INTERVAL = 30000; // 30秒
@@ -174,6 +175,7 @@ export class MarketWatcher {
   /**
    * 处理接收的消息
    * 包含完整的消息验证以防止恶意或畸形消息导致崩溃
+   * 支持 Polymarket CLOB v2 数组格式
    */
   private handleMessage(data: WebSocket.RawData): void {
     // 步骤 1: 验证消息大小 (防止内存攻击)
@@ -185,9 +187,9 @@ export class MarketWatcher {
     }
 
     // 步骤 2: 解析 JSON
-    let message: Record<string, unknown>;
+    let parsed: unknown;
     try {
-      message = JSON.parse(dataStr);
+      parsed = JSON.parse(dataStr);
     } catch (parseError) {
       logger.error('Failed to parse WebSocket message as JSON', {
         error: parseError instanceof Error ? parseError.message : String(parseError),
@@ -196,54 +198,277 @@ export class MarketWatcher {
       return;
     }
 
-    // 步骤 3: 验证消息是对象
-    if (message === null || typeof message !== 'object' || Array.isArray(message)) {
-      logger.warn('Invalid message format: expected object', { type: typeof message });
+    this.lastHeartbeat = Date.now();
+
+    // 步骤 3: 处理数组格式 (Polymarket CLOB v2 格式)
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        if (item && typeof item === 'object') {
+          this.handleSingleMessage(item as Record<string, unknown>);
+        }
+      }
       return;
     }
 
-    this.lastHeartbeat = Date.now();
+    // 步骤 4: 处理对象格式
+    if (parsed !== null && typeof parsed === 'object') {
+      this.handleSingleMessage(parsed as Record<string, unknown>);
+      return;
+    }
 
-    // 步骤 4: 根据消息类型处理 (带类型验证)
-    const messageType = message.type ?? message.event;
+    logger.warn('Invalid message format', { type: typeof parsed });
+  }
 
-    if (messageType === 'price_update' || messageType === 'book') {
-      // 验证价格更新消息的必要字段
-      if (!this.validatePriceMessage(message)) {
-        logger.warn('Invalid price update message structure', {
-          hasMarket: 'market' in message || 'asset_id' in message,
-          hasBids: 'bids' in message,
-          hasAsks: 'asks' in message,
-        });
-        return;
+  /**
+   * 处理单个消息对象
+   */
+  private handleSingleMessage(message: Record<string, unknown>): void {
+    // 根据消息类型处理 (带类型验证)
+    const messageType = message.event_type ?? message.type ?? message.event;
+
+    // 检查是否有 price_changes 数组 (批量价格更新事件)
+    if (Array.isArray(message.price_changes)) {
+      this.handlePriceChangesArray(message.price_changes as Array<Record<string, unknown>>);
+      return;
+    }
+
+    if (messageType === 'book') {
+      // Polymarket CLOB v2 订单簿事件
+      this.handleBookEvent(message);
+    } else if (messageType === 'price_change') {
+      // 价格变化事件
+      this.handlePriceChangeEvent(message);
+    } else if (messageType === 'last_trade_price') {
+      // 最后成交价事件
+      this.handleLastTradePriceEvent(message);
+    } else if (messageType === 'price_update') {
+      // 旧格式价格更新
+      if (this.validatePriceMessage(message)) {
+        this.handlePriceUpdate(message);
       }
-      this.handlePriceUpdate(message);
     } else if (messageType === 'market_info') {
-      // 验证市场信息消息
-      if (!this.validateMarketInfoMessage(message)) {
-        logger.warn('Invalid market info message structure');
-        return;
+      if (this.validateMarketInfoMessage(message)) {
+        this.handleMarketInfo(message);
       }
-      this.handleMarketInfo(message);
     } else if (messageType === 'error') {
-      // 服务端错误消息
       logger.error('Server error message', {
         errorCode: message.code,
         errorMessage: message.message,
       });
     } else if (messageType === 'subscribed' || messageType === 'unsubscribed') {
-      // 订阅确认消息
       logger.debug('Subscription status', { type: messageType, market: message.market });
     } else if (messageType === 'pong' || messageType === 'heartbeat') {
-      // 心跳响应
       logger.debug('Heartbeat received');
     } else {
-      // 未知消息类型
       logger.debug('Received unknown message type', {
         type: messageType,
         keys: Object.keys(message).slice(0, 10),
       });
     }
+  }
+
+  /**
+   * 处理 Polymarket CLOB v2 订单簿事件
+   */
+  private handleBookEvent(message: Record<string, unknown>): void {
+    const assetId = message.asset_id as string;
+    const bids = message.bids as Array<{ price: string; size: string }> | undefined;
+    const asks = message.asks as Array<{ price: string; size: string }> | undefined;
+
+    if (!assetId) {
+      logger.warn('Book event missing asset_id');
+      return;
+    }
+
+    // 更新订单簿
+    const orderBook = this.orderBooks.get(assetId) || {
+      tokenId: assetId,
+      asks: [],
+      bids: [],
+      lastUpdate: 0,
+    };
+
+    if (bids && bids.length > 0) {
+      orderBook.bids = bids.slice(0, this.ORDER_BOOK_DEPTH).map(b => ({
+        price: parseFloat(b.price),
+        size: parseFloat(b.size),
+      }));
+    }
+
+    if (asks && asks.length > 0) {
+      orderBook.asks = asks.slice(0, this.ORDER_BOOK_DEPTH).map(a => ({
+        price: parseFloat(a.price),
+        size: parseFloat(a.size),
+      }));
+    }
+
+    orderBook.lastUpdate = Date.now();
+    this.orderBooks.set(assetId, orderBook);
+
+    // 构建价格快照并触发事件
+    this.emitPriceSnapshot();
+  }
+
+  /**
+   * 处理 price_changes 数组 (批量价格更新事件)
+   * 这种事件包含 best_bid/best_ask 信息，用于更新订单簿最佳价格
+   */
+  private handlePriceChangesArray(priceChanges: Array<Record<string, unknown>>): void {
+    let hasUpdate = false;
+
+    for (const change of priceChanges) {
+      const assetId = change.asset_id as string;
+      const bestBid = change.best_bid as string | undefined;
+      const bestAsk = change.best_ask as string | undefined;
+
+      if (!assetId) continue;
+
+      // 更新订单簿的最佳买卖价
+      const orderBook = this.orderBooks.get(assetId);
+      if (orderBook) {
+        if (bestBid) {
+          const bidPrice = parseFloat(bestBid);
+          // 如果 bids 为空或第一个价格不是 best_bid，更新它
+          if (orderBook.bids.length === 0 || orderBook.bids[0].price !== bidPrice) {
+            if (orderBook.bids.length === 0) {
+              orderBook.bids.push({ price: bidPrice, size: 0 });
+            } else {
+              orderBook.bids[0].price = bidPrice;
+            }
+            hasUpdate = true;
+          }
+        }
+        if (bestAsk) {
+          const askPrice = parseFloat(bestAsk);
+          // 如果 asks 为空或第一个价格不是 best_ask，更新它
+          if (orderBook.asks.length === 0 || orderBook.asks[0].price !== askPrice) {
+            if (orderBook.asks.length === 0) {
+              orderBook.asks.push({ price: askPrice, size: 0 });
+            } else {
+              orderBook.asks[0].price = askPrice;
+            }
+            hasUpdate = true;
+          }
+        }
+        orderBook.lastUpdate = Date.now();
+      }
+    }
+
+    // 如果有更新，触发价格快照
+    if (hasUpdate) {
+      logger.debug('Price changes processed', {
+        count: priceChanges.length,
+      });
+      this.emitPriceSnapshot();
+    }
+  }
+
+  /**
+   * 处理价格变化事件
+   */
+  private handlePriceChangeEvent(message: Record<string, unknown>): void {
+    const assetId = message.asset_id as string;
+    const price = message.price as string;
+    const bestBid = message.best_bid as string | undefined;
+    const bestAsk = message.best_ask as string | undefined;
+
+    if (!assetId) {
+      return;
+    }
+
+    // 更新订单簿的最佳价格
+    const orderBook = this.orderBooks.get(assetId);
+    if (orderBook) {
+      if (bestBid) {
+        const bidPrice = parseFloat(bestBid);
+        if (orderBook.bids.length === 0) {
+          orderBook.bids.push({ price: bidPrice, size: 0 });
+        } else {
+          orderBook.bids[0].price = bidPrice;
+        }
+      }
+      if (bestAsk) {
+        const askPrice = parseFloat(bestAsk);
+        if (orderBook.asks.length === 0) {
+          orderBook.asks.push({ price: askPrice, size: 0 });
+        } else {
+          orderBook.asks[0].price = askPrice;
+        }
+      }
+      orderBook.lastUpdate = Date.now();
+    }
+
+    logger.debug('Price change event', {
+      assetId: assetId.substring(0, 20) + '...',
+      price,
+      bestBid,
+      bestAsk,
+    });
+
+    // 触发价格更新
+    this.emitPriceSnapshot();
+  }
+
+  /**
+   * 处理最后成交价事件
+   */
+  private handleLastTradePriceEvent(message: Record<string, unknown>): void {
+    const assetId = message.asset_id as string;
+    const price = message.price as string;
+
+    if (!assetId || !price) {
+      return;
+    }
+
+    logger.debug('Last trade price event', {
+      assetId: assetId.substring(0, 20) + '...',
+      price,
+    });
+
+    this.emitPriceSnapshot();
+  }
+
+  /**
+   * 从订单簿生成并发送价格快照
+   */
+  private emitPriceSnapshot(): void {
+    const upBook = this.orderBooks.get(this.upTokenId);
+    const downBook = this.orderBooks.get(this.downTokenId);
+
+    if (!upBook && !downBook) {
+      return;
+    }
+
+    // 计算最佳买卖价
+    const upBestBid = upBook?.bids[0]?.price || 0;
+    const upBestAsk = upBook?.asks[0]?.price || 0;
+    const downBestBid = downBook?.bids[0]?.price || 0;
+    const downBestAsk = downBook?.asks[0]?.price || 0;
+
+    const snapshot: PriceSnapshot = {
+      upBestBid,
+      upBestAsk,
+      downBestBid,
+      downBestAsk,
+      timestamp: Date.now(),
+      roundSlug: this.currentMarket?.roundSlug || 'static-market',
+      secondsRemaining: 0, // 静态市场没有时间限制
+      upTokenId: this.upTokenId,
+      downTokenId: this.downTokenId,
+    };
+
+    // 添加到缓冲区
+    this.priceBuffer.push(snapshot);
+
+    // 发送事件
+    eventBus.emitEvent('price:update', snapshot);
+
+    // 存储订单簿快照用于 getOrderBookSnapshot()
+    this.lastOrderBookSnapshot = {
+      up: upBook || { tokenId: this.upTokenId, asks: [], bids: [], lastUpdate: 0 },
+      down: downBook || { tokenId: this.downTokenId, asks: [], bids: [], lastUpdate: 0 },
+      timestamp: Date.now(),
+    };
   }
 
   /**
@@ -446,19 +671,45 @@ export class MarketWatcher {
 
   /**
    * 订阅市场
+   * 使用 Polymarket CLOB WebSocket API 格式
    */
   subscribe(tokenId: string): void {
     this.subscriptions.add(tokenId);
 
     if (this.ws && this.connectionState === 'connected') {
+      // Polymarket CLOB WebSocket 正确的订阅格式
       const message = JSON.stringify({
-        type: 'subscribe',
-        channel: 'book',
-        market: tokenId,
+        type: 'MARKET',
+        assets_ids: [tokenId],
       });
 
       this.ws.send(message);
-      logger.info(`Subscribed to market: ${tokenId}`);
+      logger.info('Subscribed to market', {
+        tokenId: tokenId.substring(0, 30) + '...',
+        format: 'CLOB-v2',
+      });
+    }
+  }
+
+  /**
+   * 批量订阅多个市场
+   */
+  subscribeMultiple(tokenIds: string[]): void {
+    for (const tokenId of tokenIds) {
+      this.subscriptions.add(tokenId);
+    }
+
+    if (this.ws && this.connectionState === 'connected') {
+      const message = JSON.stringify({
+        type: 'MARKET',
+        assets_ids: tokenIds,
+      });
+
+      this.ws.send(message);
+      logger.info('Subscribed to multiple markets', {
+        count: tokenIds.length,
+        format: 'CLOB-v2',
+      });
     }
   }
 
@@ -470,13 +721,14 @@ export class MarketWatcher {
 
     if (this.ws && this.connectionState === 'connected') {
       const message = JSON.stringify({
-        type: 'unsubscribe',
-        channel: 'book',
-        market: tokenId,
+        assets_ids: [tokenId],
+        operation: 'unsubscribe',
       });
 
       this.ws.send(message);
-      logger.info(`Unsubscribed from market: ${tokenId}`);
+      logger.info('Unsubscribed from market', {
+        tokenId: tokenId.substring(0, 30) + '...',
+      });
     }
   }
 
@@ -605,6 +857,12 @@ export class MarketWatcher {
    * 获取完整订单簿快照
    */
   getOrderBookSnapshot(): OrderBookSnapshot | null {
+    // 优先返回缓存的快照（来自实时事件处理）
+    if (this.lastOrderBookSnapshot) {
+      return this.lastOrderBookSnapshot;
+    }
+
+    // 回退：实时计算
     const upBook = this.getUpOrderBook();
     const downBook = this.getDownOrderBook();
 

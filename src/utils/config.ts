@@ -231,6 +231,46 @@ export function setConfig(config: BotConfig): void {
 }
 
 /**
+ * 静态市场配置 (从 .env 加载)
+ */
+export interface StaticMarketConfig {
+  upTokenId: string;
+  downTokenId: string;
+  conditionId: string;
+  slug: string;
+}
+
+/**
+ * 加载静态市场配置
+ * 用于当自动发现没有找到市场时的 fallback
+ */
+export function loadStaticMarketConfig(): StaticMarketConfig | null {
+  const upTokenId = getEnv('TOKEN_ID_UP', '');
+  const downTokenId = getEnv('TOKEN_ID_DOWN', '');
+  const conditionId = getEnv('CONDITION_ID', '');
+
+  if (!upTokenId || !downTokenId) {
+    logger.debug('No static market configured in .env');
+    return null;
+  }
+
+  const config: StaticMarketConfig = {
+    upTokenId,
+    downTokenId,
+    conditionId,
+    slug: 'static-market',
+  };
+
+  logger.info('Static market config loaded from .env', {
+    upTokenId: upTokenId.substring(0, 20) + '...',
+    downTokenId: downTokenId.substring(0, 20) + '...',
+    conditionId: conditionId ? conditionId.substring(0, 20) + '...' : 'N/A',
+  });
+
+  return config;
+}
+
+/**
  * 加载告警配置
  */
 export function loadAlertConfig(): Partial<AlertConfig> {

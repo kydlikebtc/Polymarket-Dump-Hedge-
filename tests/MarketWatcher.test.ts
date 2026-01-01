@@ -154,7 +154,7 @@ describe('MarketWatcher', () => {
       await connectPromise;
     });
 
-    it('subscribe() 应该发送订阅消息', () => {
+    it('subscribe() 应该发送订阅消息 (CLOB v2 格式)', () => {
       watcher.subscribe('test-token-id');
 
       // 获取内部 ws 实例
@@ -163,22 +163,31 @@ describe('MarketWatcher', () => {
 
       const callArg = ws.send.mock.calls[0][0];
       const message = JSON.parse(callArg);
-      expect(message.type).toBe('subscribe');
-      expect(message.channel).toBe('book');
-      expect(message.market).toBe('test-token-id');
+      // Polymarket CLOB v2 WebSocket 格式
+      expect(message.type).toBe('MARKET');
+      expect(message.assets_ids).toEqual(['test-token-id']);
     });
 
-    it('unsubscribe() 应该发送取消订阅消息', () => {
+    it('subscribeMultiple() 应该批量订阅多个 token', () => {
+      watcher.subscribeMultiple(['token-1', 'token-2']);
+
+      const ws = (watcher as unknown as { ws: { send: Mock } }).ws;
+      expect(ws.send).toHaveBeenCalled();
+
+      const callArg = ws.send.mock.calls[0][0];
+      const message = JSON.parse(callArg);
+      expect(message.type).toBe('MARKET');
+      expect(message.assets_ids).toEqual(['token-1', 'token-2']);
+    });
+
+    it('unsubscribe() 应该从订阅集合中移除', () => {
       watcher.subscribe('test-token-id');
       watcher.unsubscribe('test-token-id');
 
-      const ws = (watcher as unknown as { ws: { send: Mock } }).ws;
-      expect(ws.send).toHaveBeenCalledTimes(2);
-
-      const callArg = ws.send.mock.calls[1][0];
-      const message = JSON.parse(callArg);
-      expect(message.type).toBe('unsubscribe');
-      expect(message.market).toBe('test-token-id');
+      // unsubscribe 目前只从内部集合移除，不发送取消订阅消息
+      // 因为 Polymarket CLOB v2 API 不需要显式取消订阅
+      const subscriptions = (watcher as unknown as { subscriptions: Set<string> }).subscriptions;
+      expect(subscriptions.has('test-token-id')).toBe(false);
     });
   });
 
@@ -211,13 +220,27 @@ describe('MarketWatcher', () => {
       expect(latestPrice?.downBestAsk).toBe(0.55);
     });
 
-    it('应该处理 orderbook 格式的消息', () => {
-      const orderbookMessage = JSON.stringify({
-        type: 'book',
-        market: 'BTC-15min-test',
-        bids: [['0.44', '100'], ['0.43', '200']],
-        asks: [['0.45', '100'], ['0.46', '200']],
-      });
+    it('应该处理 CLOB v2 数组格式的 orderbook 消息', () => {
+      // 首先设置 Token IDs
+      watcher.setTokenIds('up-token-id', 'down-token-id');
+
+      // CLOB v2 返回数组格式
+      const orderbookMessage = JSON.stringify([
+        {
+          event_type: 'book',
+          asset_id: 'up-token-id',
+          bids: [{ price: '0.44', size: '100' }, { price: '0.43', size: '200' }],
+          asks: [{ price: '0.45', size: '100' }, { price: '0.46', size: '200' }],
+          hash: 'test-hash-1',
+        },
+        {
+          event_type: 'book',
+          asset_id: 'down-token-id',
+          bids: [{ price: '0.54', size: '100' }],
+          asks: [{ price: '0.55', size: '100' }],
+          hash: 'test-hash-2',
+        },
+      ]);
 
       ws.emit('message', Buffer.from(orderbookMessage));
 
@@ -225,6 +248,8 @@ describe('MarketWatcher', () => {
       expect(latestPrice).toBeDefined();
       expect(latestPrice?.upBestAsk).toBe(0.45);
       expect(latestPrice?.upBestBid).toBe(0.44);
+      expect(latestPrice?.downBestAsk).toBe(0.55);
+      expect(latestPrice?.downBestBid).toBe(0.54);
     });
 
     it('应该处理市场信息消息', () => {

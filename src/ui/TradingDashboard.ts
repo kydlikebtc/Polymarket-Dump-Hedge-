@@ -17,8 +17,12 @@
  * └──────────────────────────────────────────────────────────────┘
  */
 
-import * as blessed from 'blessed';
+import type * as BlessedTypes from 'blessed';
+import * as blessedModule from 'blessed';
 import { TradingEngine } from '../core/index.js';
+
+// ESM/CommonJS 兼容性处理：blessed 使用 CommonJS 导出，需要通过 default 访问
+const blessed: typeof BlessedTypes = (blessedModule as any).default || blessedModule;
 import { eventBus } from '../utils/EventBus.js';
 import { logger } from '../utils/logger.js';
 import type { Btc15mMarket } from '../api/MarketDiscoveryService.js';
@@ -52,19 +56,19 @@ interface RecentTrade {
 }
 
 export class TradingDashboard {
-  private screen: blessed.Widgets.Screen;
+  private screen: BlessedTypes.Widgets.Screen;
 
   // 顶部区域
-  private headerBox: blessed.Widgets.BoxElement;
+  private headerBox: BlessedTypes.Widgets.BoxElement;
 
   // 中间区域 - 三列布局
-  private positionsBox: blessed.Widgets.BoxElement;
-  private marketAnalysisBox: blessed.Widgets.BoxElement;
-  private orderBookBox: blessed.Widgets.BoxElement;
+  private positionsBox: BlessedTypes.Widgets.BoxElement;
+  private marketAnalysisBox: BlessedTypes.Widgets.BoxElement;
+  private orderBookBox: BlessedTypes.Widgets.BoxElement;
 
   // 底部区域
-  private recentTradesBox: blessed.Widgets.BoxElement;
-  private statusBar: blessed.Widgets.BoxElement;
+  private recentTradesBox: BlessedTypes.Widgets.BoxElement;
+  private statusBar: BlessedTypes.Widgets.BoxElement;
 
   // 数据状态
   private engine: TradingEngine | null = null;
@@ -126,7 +130,7 @@ export class TradingDashboard {
 
   // ========== 面板创建 ==========
 
-  private createHeaderBox(): blessed.Widgets.BoxElement {
+  private createHeaderBox(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
       top: 0,
       left: 0,
@@ -141,7 +145,7 @@ export class TradingDashboard {
     });
   }
 
-  private createPositionsBox(): blessed.Widgets.BoxElement {
+  private createPositionsBox(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
       top: 3,
       left: 0,
@@ -158,7 +162,7 @@ export class TradingDashboard {
     });
   }
 
-  private createMarketAnalysisBox(): blessed.Widgets.BoxElement {
+  private createMarketAnalysisBox(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
       top: 3,
       left: '33%',
@@ -175,7 +179,7 @@ export class TradingDashboard {
     });
   }
 
-  private createOrderBookBox(): blessed.Widgets.BoxElement {
+  private createOrderBookBox(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
       top: 3,
       left: '67%',
@@ -192,7 +196,7 @@ export class TradingDashboard {
     });
   }
 
-  private createRecentTradesBox(): blessed.Widgets.BoxElement {
+  private createRecentTradesBox(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
       top: 15,
       left: 0,
@@ -211,7 +215,7 @@ export class TradingDashboard {
     });
   }
 
-  private createStatusBar(): blessed.Widgets.BoxElement {
+  private createStatusBar(): BlessedTypes.Widgets.BoxElement {
     return blessed.box({
       bottom: 0,
       left: 0,

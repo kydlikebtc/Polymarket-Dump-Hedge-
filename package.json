@@ -16,6 +16,7 @@
     "dashboard:dry": "tsx src/dashboard.ts --dry-run",
     "trading": "tsx src/trading-dashboard.ts",
     "trading:dry": "tsx src/trading-dashboard.ts --dry-run",
+    "test:dashboard": "tsx scripts/test-dashboard.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

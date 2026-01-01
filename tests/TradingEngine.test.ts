@@ -20,6 +20,8 @@ vi.mock('../src/api/MarketWatcher.js', () => ({
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn(),
     subscribe: vi.fn(),
+    subscribeMultiple: vi.fn(),
+    setTokenIds: vi.fn(),
     getPriceBuffer: vi.fn().mockReturnValue([]),
     getLatestPrice: vi.fn().mockReturnValue(null),
   })),
@@ -60,6 +62,11 @@ vi.mock('../src/core/RoundManager.js', () => ({
     getUpTokenId: vi.fn().mockReturnValue('test-up-token'),
     getDownTokenId: vi.fn().mockReturnValue('test-down-token'),
     updateFromSnapshot: vi.fn(),
+    ensureActiveMarket: vi.fn().mockResolvedValue(true),
+    useStaticMarket: vi.fn().mockReturnValue(true),
+    hasAvailableMarket: vi.fn().mockReturnValue(true),
+    isUsingStaticMarket: vi.fn().mockReturnValue(false),
+    getStaticMarketConfig: vi.fn().mockReturnValue(null),
   })),
 }));
 
@@ -259,13 +266,15 @@ describe('TradingEngine', () => {
     });
 
     it('应该处理 ws:connected 事件', () => {
-      const subscribeSpy = engine.getMarketWatcher().subscribe as Mock;
+      const subscribeMultipleSpy = engine.getMarketWatcher().subscribeMultiple as Mock;
+      const setTokenIdsSpy = engine.getMarketWatcher().setTokenIds as Mock;
 
       // 触发连接事件
       eventBus.emit('ws:connected', undefined);
 
-      // 应该订阅市场
-      expect(subscribeSpy).toHaveBeenCalled();
+      // 应该设置 Token IDs 并批量订阅市场
+      expect(setTokenIdsSpy).toHaveBeenCalled();
+      expect(subscribeMultipleSpy).toHaveBeenCalled();
     });
 
     it('应该处理 ws:disconnected 事件', () => {

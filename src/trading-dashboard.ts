@@ -77,11 +77,6 @@ async function main(): Promise<void> {
     logger.level = 'debug';
   }
 
-  console.log('\n╔════════════════════════════════════════════════════╗');
-  console.log('║    BTC 15m Trading Dashboard v0.2.0                ║');
-  console.log('║    Polymarket Dump & Hedge Bot                     ║');
-  console.log('╚════════════════════════════════════════════════════╝\n');
-
   logger.info('Trading Dashboard 启动中...', {
     dryRun,
     debug,
@@ -94,16 +89,7 @@ async function main(): Promise<void> {
   // 覆盖 dryRun 设置
   if (dryRun) {
     config.dryRun = true;
-    console.log('🔸 模式: Dry-Run (模拟交易)');
-  } else {
-    console.log('🔴 模式: 实盘 (真实交易)');
   }
-
-  if (autoDiscover) {
-    console.log('🔄 市场发现: 自动轮换已启用');
-  }
-
-  console.log('');
 
   // 初始化告警管理器
   const alertConfig = loadAlertConfig();
@@ -112,7 +98,7 @@ async function main(): Promise<void> {
   // 初始化数据库
   getDatabase();
 
-  // 创建 Trading Dashboard
+  // 创建 Trading Dashboard (立即接管终端)
   dashboard = new TradingDashboard();
 
   // 创建交易引擎

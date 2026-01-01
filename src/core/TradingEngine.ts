@@ -97,6 +97,12 @@ export class TradingEngine {
     eventBus.onEvent('round:expired', () => {
       this.onRoundExpired();
     });
+
+    // 市场切换事件 (自动发现模式)
+    eventBus.onEvent('market:switched', () => {
+      logger.info('Market switched - resubscribing to new market');
+      this.subscribeToCurrentMarket();
+    });
   }
 
   /**
@@ -117,6 +123,15 @@ export class TradingEngine {
 
       // 启动轮次检查
       this.roundManager.startPeriodicCheck();
+
+      // 确保有活跃市场 (自动发现或静态配置)
+      const hasMarket = await this.roundManager.ensureActiveMarket();
+      if (hasMarket) {
+        logger.info('Active market ready, subscribing...');
+        this.subscribeToCurrentMarket();
+      } else {
+        logger.warn('No market available - waiting for auto-discovery or manual configuration');
+      }
 
       logger.info('Trading engine started successfully');
 
@@ -467,12 +482,24 @@ export class TradingEngine {
     const upToken = this.roundManager.getUpTokenId();
     const downToken = this.roundManager.getDownTokenId();
 
-    if (upToken) {
-      this.marketWatcher.subscribe(upToken);
+    if (!upToken || !downToken) {
+      logger.warn('Cannot subscribe - missing token IDs', {
+        hasUpToken: !!upToken,
+        hasDownToken: !!downToken,
+      });
+      return;
     }
-    if (downToken) {
-      this.marketWatcher.subscribe(downToken);
-    }
+
+    // 设置 MarketWatcher 的 Token IDs（用于订单簿追踪）
+    this.marketWatcher.setTokenIds(upToken, downToken);
+
+    // 批量订阅两个 token
+    this.marketWatcher.subscribeMultiple([upToken, downToken]);
+
+    logger.info('Subscribed to market tokens', {
+      upToken: upToken.substring(0, 20) + '...',
+      downToken: downToken.substring(0, 20) + '...',
+    });
   }
 
   /**
