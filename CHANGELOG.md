@@ -6,31 +6,75 @@
 
 ## [Unreleased]
 
+### 计划中
+- Web Dashboard 可视化界面
+- 多市场并行监控 (ETH, SOL 等)
+- 高级风控策略
+
+---
+
+## [0.3.0] - 2026-01-01
+
 ### 新增
 
-#### Dashboard UI 优化 (v0.3.0 预览)
-- **MARKET INFO 区域** - 新增市场信息展示
+#### Dashboard UI 重构与市场交易显示
+
+- **MARKET INFO 区域** - 市场信息展示
   - 显示当前市场名称和剩余时间倒计时
   - UP/DOWN Token ID 缩略显示
   - 时间颜色指示 (红色 < 1分钟, 黄色 < 3分钟, 绿色)
 
-- **ORDER BOOK 区域** - 新增实时订单簿显示
+- **ORDER BOOK 区域** - 实时订单簿显示
   - 左右分栏显示 UP/DOWN 订单簿
   - BIDS (买单) 和 ASKS (卖单) 分列显示
   - 显示最多 10 档深度
   - 总量统计显示
 
-- **MARKET ANALYSIS 增强** - 恢复完整套利分析
+- **MARKET ANALYSIS 增强** - 完整套利分析
   - UP/DOWN 价格百分比显示
   - Combined 组合价格 + Target 目标阈值
   - Spread 价差百分比
-  - 可视化进度条指示器:
-    - 套利机会: `████████████████████████████████████████` (绿色)
-    - 等待中: `░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░` (黄色)
-  - Bid 价格对比 (UP vs DOWN)
-  - Delta 差值百分比
+  - 可视化进度条指示器
+  - Bid 价格对比、Delta 差值百分比
   - 交易周期数 (Pairs) 和累计盈亏 (PnL)
-  - 套利机会提示: `🎯 ARBITRAGE OPPORTUNITY! +$X.XX`
+  - 套利机会提示: `🎯 ARBITRAGE OPPORTUNITY!`
+
+- **RECENT TRANSACTIONS 市场交易** - 实时市场成交记录
+  - 显示市场所有成交记录 (非仅用户订单)
+  - 数据来源: WebSocket `last_trade_price` 事件
+  - 表头格式: `TIME  TOKEN  SIDE  PRICE  SIZE`
+  - 只显示当前市场的交易 (过滤 upTokenId/downTokenId)
+  - 最新交易在上方，保留 15 条
+
+#### 类型系统扩展
+
+- **MarketTrade 接口** (`src/types/index.ts`)
+  - `assetId: string` - Token ID
+  - `side: 'BUY' | 'SELL'` - 交易方向
+  - `price: number` - 成交价格
+  - `size: number` - 成交数量
+  - `timestamp: number` - 时间戳 (毫秒)
+
+- **事件类型扩展**
+  - `market:trade` 事件用于传递实时交易数据
+
+### 修复
+
+- **市场名称显示** - 修复 Dashboard 显示 "static-market" 而非实际市场名称
+  - `RoundManager.updateFromSnapshot()` 在静态市场模式下忽略 snapshot 的 roundSlug
+
+- **剩余时间显示** - 修复剩余时间显示 00:00
+  - Dashboard 每秒更新市场信息
+  - RoundManager 使用自己计算的剩余时间
+
+### 安全增强
+
+- **WebSocket 数据验证** (`MarketWatcher.handleLastTradePriceEvent`)
+  - `assetId` 字符串验证和长度限制 (max 100)
+  - `Number.isFinite()` 检查 price/size 防止 NaN/Infinity
+  - 价格范围验证 (0-1)
+  - 时间戳安全范围检查 (防止未来时间戳攻击)
+  - 完整的 null/undefined 检查
 
 ### 改进
 
@@ -255,6 +299,7 @@
 
 ---
 
-[Unreleased]: https://github.com/user/pmdumphedge/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/user/pmdumphedge/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/user/pmdumphedge/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/user/pmdumphedge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/user/pmdumphedge/releases/tag/v0.1.0

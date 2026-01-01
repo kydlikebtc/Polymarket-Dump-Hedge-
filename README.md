@@ -54,17 +54,19 @@ IDLE → WATCHING → LEG1_PENDING → LEG1_FILLED → LEG2_PENDING → COMPLETE
 - **数据持久化**: SQLite 存储行情数据和交易记录
 - **Dry-Run 模式**: 模拟交易，安全测试策略
 
-### v0.2.0 新功能
+### v0.3.0 新功能 (当前版本)
+- **MARKET INFO 区域**: 显示当前市场名称、剩余时间倒计时、Token ID
+- **ORDER BOOK 区域**: 实时订单簿深度显示，UP/DOWN 分栏，最多 10 档
+- **MARKET ANALYSIS 增强**: 可视化套利进度条、Delta 差值、累计盈亏统计
+- **RECENT TRANSACTIONS**: 显示市场实时成交记录 (WebSocket `last_trade_price` 事件)
+- **静态市场 Fallback**: 当自动发现未找到市场时使用 .env 中的静态 Token ID
+- **安全增强**: 完整的 WebSocket 数据验证 (NaN/Infinity 防护、时间戳范围检查)
+
+### v0.2.0 功能
 - **市场自动发现**: 自动发现并切换到最新的 BTC 15 分钟预测市场
 - **轮次自动轮换**: 当前轮次到期后无缝切换到下一轮，无需手动更新 Token ID
 - **专业交易面板**: 全新 TradingDashboard，包含持仓、市场分析、订单簿、交易流水
 - **订单簿深度**: MarketWatcher 支持完整订单簿数据和深度分析
-
-### v0.3.0 预览功能 (开发中)
-- **MARKET INFO 区域**: 显示当前市场、剩余时间倒计时、Token ID
-- **ORDER BOOK 区域**: 实时订单簿深度显示，UP/DOWN 分栏，最多 10 档
-- **MARKET ANALYSIS 增强**: 可视化套利进度条、Delta 差值、累计盈亏统计
-- **静态市场 Fallback**: 当自动发现未找到市场时使用 .env 中的静态 Token ID
 
 ### 告警系统
 - **多渠道告警**: 支持 Console、Telegram Bot、Discord Webhook
@@ -466,7 +468,11 @@ const recent = buffer.getInTimeWindow(3000, item => item.timestamp);
   - Bid 价格对比、Delta 差值
   - 交易周期数 (Pairs) 和累计盈亏 (PnL)
   - 套利机会提示: `🎯 ARBITRAGE OPPORTUNITY!`
-- **RECENT TRANSACTIONS**: 最近交易记录
+- **RECENT TRANSACTIONS**: 市场实时成交记录
+  - 显示当前市场所有成交 (非仅用户订单)
+  - 数据来源: WebSocket `last_trade_price` 事件
+  - 表头格式: `TIME  TOKEN  SIDE  PRICE  SIZE`
+  - 最新交易在上方，保留 15 条
 - **STATUS**: 引擎状态、配置参数显示
 
 ## 测试

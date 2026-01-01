@@ -28,6 +28,7 @@ import type {
   Order,
   CycleStatus,
   Side,
+  MarketTrade,
 } from '../types/index.js';
 import type { OrderBookSnapshot } from '../api/MarketWatcher.js';
 
@@ -413,6 +414,11 @@ export class Dashboard {
         this.recentAlerts.pop();
       }
     });
+
+    // v0.3.0: 市场交易事件 - 显示市场所有成交
+    eventBus.onEvent('market:trade', (trade: MarketTrade) => {
+      this.addMarketTrade(trade);
+    });
   }
 
   /**
@@ -672,6 +678,82 @@ export class Dashboard {
   }
 
   /**
+   * v0.3.0: 添加市场交易记录
+   * 显示市场上所有成交（不仅仅是用户自己的订单）
+   */
+  private addMarketTrade(trade: MarketTrade): void {
+    // 判断是 UP 还是 DOWN token
+    const roundManager = this.engine?.getRoundManager();
+    if (!roundManager) {
+      return;
+    }
+
+    const upTokenId = roundManager.getUpTokenId() || '';
+    const downTokenId = roundManager.getDownTokenId() || '';
+
+    // 过滤掉不属于当前市场的交易
+    if (trade.assetId !== upTokenId && trade.assetId !== downTokenId) {
+      return;
+    }
+
+    let tokenLabel: string;
+    let tokenColor: string;
+    let tokenSymbol: string;
+
+    if (trade.assetId === upTokenId) {
+      tokenLabel = 'YES';
+      tokenColor = 'green';
+      tokenSymbol = '▲';
+    } else {
+      tokenLabel = 'NO';
+      tokenColor = 'red';
+      tokenSymbol = '▼';
+    }
+
+    // 验证并格式化时间
+    const timestamp = Number.isFinite(trade.timestamp) && trade.timestamp > 0
+      ? trade.timestamp
+      : Date.now();
+    const time = new Date(timestamp).toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+
+    // 交易方向颜色
+    const directionColor = trade.side === 'BUY' ? 'green' : 'red';
+    const directionLabel = trade.side === 'BUY' ? 'BUY ' : 'SELL';
+
+    // 格式化价格和数量（带数值验证）
+    const priceStr = Number.isFinite(trade.price)
+      ? (trade.price * 100).toFixed(1) + '%'
+      : 'N/A';
+    const sizeStr = Number.isFinite(trade.size) && trade.size > 0
+      ? trade.size.toFixed(0)
+      : '-';
+
+    // 获取当前内容并添加新行
+    const currentContent = this.transactionsBox.getContent();
+    const newLine = `  {gray-fg}${time}{/gray-fg}  {${tokenColor}-fg}${tokenSymbol}${tokenLabel.padEnd(3)}{/${tokenColor}-fg}  {${directionColor}-fg}${directionLabel}{/${directionColor}-fg}  ${priceStr.padStart(6)}  ${sizeStr.padStart(5)}`;
+
+    // 分离表头和数据行
+    const allLines = currentContent.split('\n');
+    const headerLines = allLines.slice(0, 2); // 保留前2行（空行+表头）
+    const dataLines = allLines.slice(2).filter(l => l.trim());
+
+    // 添加新行到数据行开头（最新的在上面）
+    dataLines.unshift(newLine);
+
+    // 保持最近 15 条
+    if (dataLines.length > 15) {
+      dataLines.pop();
+    }
+
+    this.transactionsBox.setContent(headerLines.join('\n') + '\n' + dataLines.join('\n'));
+    this.screen.render();
+  }
+
+  /**
    * 更新状态显示
    */
   private updateStatus(): void {
@@ -748,8 +830,8 @@ export class Dashboard {
     this.updateAll();
     this.screen.render();
 
-    // 初始化交易列表表头
-    const header = '\n  {cyan-fg}TIME         SIDE     PRICE       SIZE      TX HASH{/cyan-fg}\n';
+    // 初始化交易列表表头 (v0.3.0: 显示市场交易)
+    const header = '\n  {cyan-fg}TIME       TOKEN  SIDE   PRICE   SIZE{/cyan-fg}\n';
     this.transactionsBox.setContent(header);
 
     // 定期刷新状态和市场信息（每秒更新剩余时间显示）

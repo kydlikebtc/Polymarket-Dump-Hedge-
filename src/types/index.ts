@@ -191,6 +191,23 @@ export interface BotEvents {
   'market:switching': { from: string; to: string };
   'market:switched': Btc15mMarketInfo;
   'market:wait_for_next': { retryCount: number };
+
+  // 市场交易事件 (v0.3.0)
+  'market:trade': MarketTrade;
+}
+
+// ===== 市场交易类型 (v0.3.0) =====
+
+/**
+ * 市场实时成交数据
+ * 来自 Polymarket WebSocket last_trade_price 事件
+ */
+export interface MarketTrade {
+  assetId: string;        // Token ID
+  side: 'BUY' | 'SELL';   // 交易方向
+  price: number;          // 成交价格
+  size: number;           // 成交数量
+  timestamp: number;      // 时间戳 (毫秒)
 }
 
 // ===== 市场发现类型 (v0.2.0) =====

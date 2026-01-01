@@ -9,7 +9,7 @@ import { logger } from '../utils/logger.js';
 import { CircularBuffer } from '../utils/CircularBuffer.js';
 import { eventBus } from '../utils/EventBus.js';
 import { sleep } from '../utils/index.js';
-import type { PriceSnapshot, MarketInfo, BotConfig } from '../types/index.js';
+import type { PriceSnapshot, MarketInfo, BotConfig, MarketTrade } from '../types/index.js';
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -411,19 +411,73 @@ export class MarketWatcher {
 
   /**
    * 处理最后成交价事件
+   * v0.3.0: 解析完整交易数据并发射 market:trade 事件
    */
   private handleLastTradePriceEvent(message: Record<string, unknown>): void {
     const assetId = message.asset_id as string;
-    const price = message.price as string;
+    const priceStr = message.price as string;
+    const sideStr = message.side as string;
+    const sizeStr = message.size as string;
+    const timestampStr = message.timestamp as string;
 
-    if (!assetId || !price) {
+    // 验证必填字段
+    if (!assetId || typeof assetId !== 'string' || assetId.length > 100) {
+      logger.debug('Invalid assetId in last_trade_price', { assetId: String(assetId).substring(0, 30) });
       return;
     }
+    if (!priceStr) {
+      return;
+    }
+
+    // 解析并验证价格
+    const price = parseFloat(priceStr);
+    if (!Number.isFinite(price) || price < 0 || price > 1) {
+      logger.warn('Invalid price in last_trade_price', { priceStr, price });
+      return;
+    }
+
+    // 解析并验证数量
+    const size = sizeStr ? parseFloat(sizeStr) : 0;
+    if (!Number.isFinite(size) || size < 0) {
+      logger.warn('Invalid size in last_trade_price', { sizeStr, size });
+      return;
+    }
+
+    // 验证并解析时间戳
+    let timestamp = Date.now();
+    if (timestampStr) {
+      const ts = parseInt(timestampStr, 10);
+      if (Number.isSafeInteger(ts) && ts > 0 && ts <= Date.now() + 86400000) {
+        timestamp = ts;
+      }
+    }
+
+    // 验证 side 字段
+    const sideUpper = sideStr?.toUpperCase();
+    if (sideUpper !== 'BUY' && sideUpper !== 'SELL') {
+      // 默认为 BUY (大多数情况下省略 side 表示买入)
+      logger.debug('Side not specified, defaulting to BUY', { sideStr });
+    }
+    const side: 'BUY' | 'SELL' = sideUpper === 'SELL' ? 'SELL' : 'BUY';
+
+    // 构建市场交易对象
+    const trade: MarketTrade = {
+      assetId,
+      side,
+      price,
+      size,
+      timestamp,
+    };
 
     logger.debug('Last trade price event', {
       assetId: assetId.substring(0, 20) + '...',
       price,
+      side,
+      size,
     });
+
+    // 发射市场交易事件
+    eventBus.emitEvent('market:trade', trade);
 
     this.emitPriceSnapshot();
   }

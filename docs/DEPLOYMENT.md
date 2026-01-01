@@ -1,6 +1,6 @@
 # 部署指南
 
-本文档介绍如何部署 Polymarket Dump & Hedge Bot。
+本文档介绍如何部署 Polymarket Dump & Hedge Bot (v0.3.0)。
 
 ## 目录
 
@@ -252,6 +252,13 @@ Dashboard 快捷键:
 | `p` | 调整参数 |
 | `r` | 刷新 |
 | `c` | 清空日志 |
+
+Dashboard 面板说明 (v0.3.0):
+- **MARKET INFO**: 市场名称、剩余时间、Token ID
+- **ORDER BOOK**: UP/DOWN 订单簿，最多 10 档深度
+- **MARKET ANALYSIS**: 套利分析、价格对比、进度条
+- **RECENT TRANSACTIONS**: 市场实时成交记录 (WebSocket `last_trade_price`)
+- **STATUS**: 引擎状态、配置参数
 
 ---
 
