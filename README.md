@@ -60,6 +60,12 @@ IDLE → WATCHING → LEG1_PENDING → LEG1_FILLED → LEG2_PENDING → COMPLETE
 - **专业交易面板**: 全新 TradingDashboard，包含持仓、市场分析、订单簿、交易流水
 - **订单簿深度**: MarketWatcher 支持完整订单簿数据和深度分析
 
+### v0.3.0 预览功能 (开发中)
+- **MARKET INFO 区域**: 显示当前市场、剩余时间倒计时、Token ID
+- **ORDER BOOK 区域**: 实时订单簿深度显示，UP/DOWN 分栏，最多 10 档
+- **MARKET ANALYSIS 增强**: 可视化套利进度条、Delta 差值、累计盈亏统计
+- **静态市场 Fallback**: 当自动发现未找到市场时使用 .env 中的静态 Token ID
+
 ### 告警系统
 - **多渠道告警**: 支持 Console、Telegram Bot、Discord Webhook
 - **智能节流**: 可配置时间窗口内的最大告警数量
@@ -409,11 +415,29 @@ const recent = buffer.getInTimeWindow(3000, item => item.timestamp);
 
 ### Dashboard 面板说明
 
-- **状态面板**: 显示引擎状态、当前轮次、状态机状态
-- **价格面板**: 实时 UP/DOWN 价格、价格和、对冲条件
-- **持仓面板**: 当前交易周期信息、Leg1/Leg2 状态
-- **告警面板**: 今日告警数、告警历史、最近告警
-- **日志面板**: 实时操作日志
+- **HEADER**: 标题栏，显示版本和监控状态
+- **MARKET INFO**: 市场信息区域
+  - 当前市场名称和剩余时间倒计时
+  - UP/DOWN Token ID (缩略显示)
+  - 时间颜色指示 (红 < 1分钟, 黄 < 3分钟, 绿)
+- **ORDER BOOK**: 实时订单簿
+  - UP/DOWN 分栏显示
+  - BIDS (买单) 和 ASKS (卖单) 列表
+  - 显示最多 10 档深度和总量统计
+- **POSITIONS**: 持仓面板
+  - UP/DOWN 持仓数量和价格
+  - 总盈亏 (Total PnL)
+  - 交易量统计
+- **MARKET ANALYSIS**: 套利分析面板
+  - UP/DOWN 价格百分比
+  - Combined 组合价格 + Target 目标阈值
+  - Spread 价差百分比
+  - 可视化进度条 (`████` 套利机会 / `░░░░` 等待中)
+  - Bid 价格对比、Delta 差值
+  - 交易周期数 (Pairs) 和累计盈亏 (PnL)
+  - 套利机会提示: `🎯 ARBITRAGE OPPORTUNITY!`
+- **RECENT TRANSACTIONS**: 最近交易记录
+- **STATUS**: 引擎状态、配置参数显示
 
 ## 测试
 

@@ -6,6 +6,47 @@
 
 ## [Unreleased]
 
+### 新增
+
+#### Dashboard UI 优化 (v0.3.0 预览)
+- **MARKET INFO 区域** - 新增市场信息展示
+  - 显示当前市场名称和剩余时间倒计时
+  - UP/DOWN Token ID 缩略显示
+  - 时间颜色指示 (红色 < 1分钟, 黄色 < 3分钟, 绿色)
+
+- **ORDER BOOK 区域** - 新增实时订单簿显示
+  - 左右分栏显示 UP/DOWN 订单簿
+  - BIDS (买单) 和 ASKS (卖单) 分列显示
+  - 显示最多 10 档深度
+  - 总量统计显示
+
+- **MARKET ANALYSIS 增强** - 恢复完整套利分析
+  - UP/DOWN 价格百分比显示
+  - Combined 组合价格 + Target 目标阈值
+  - Spread 价差百分比
+  - 可视化进度条指示器:
+    - 套利机会: `████████████████████████████████████████` (绿色)
+    - 等待中: `░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░` (黄色)
+  - Bid 价格对比 (UP vs DOWN)
+  - Delta 差值百分比
+  - 交易周期数 (Pairs) 和累计盈亏 (PnL)
+  - 套利机会提示: `🎯 ARBITRAGE OPPORTUNITY! +$X.XX`
+
+### 改进
+
+- Dashboard 布局调整:
+  - POSITIONS 和 MARKET ANALYSIS 高度增加到 12 行
+  - TRANSACTIONS 和 STATUS 区域顶部位置调整
+  - 整体布局更紧凑，信息密度更高
+
+### 配置
+
+- 静态市场 Fallback 支持:
+  - `TOKEN_ID_UP` - 静态 UP Token ID
+  - `TOKEN_ID_DOWN` - 静态 DOWN Token ID
+  - `CONDITION_ID` - 静态 Condition ID
+  - 当自动发现未找到市场时自动使用静态配置
+
 ---
 
 ## [0.2.0] - 2026-01-01
