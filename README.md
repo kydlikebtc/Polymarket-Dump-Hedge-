@@ -103,7 +103,9 @@ cp .env.example .env
 编辑 `.env` 文件：
 
 ```env
-# Polymarket 配置
+# Polymarket 市场配置
+MARKET_NAME=Bitcoin Up or Down on January 1?   # 市场名称 (显示在 Dashboard)
+MARKET_END_TIME=2026-01-01T17:00:00Z           # 结束时间 (ISO 格式)
 TOKEN_ID_UP=<UP代币ID>
 TOKEN_ID_DOWN=<DOWN代币ID>
 CONDITION_ID=<条件ID>
@@ -166,28 +168,57 @@ ALERT_QUIET_HOURS_TIMEZONE=Asia/Shanghai
 ### 运行
 
 ```bash
-# 开发模式 (Dry-Run)
-npm run bot -- --dry
+# ═══════════════════════════════════════════════════════════════
+# 主程序 (推荐)
+# ═══════════════════════════════════════════════════════════════
 
-# 实盘模式 (谨慎使用)
-npm run bot
+# 交互式 Dashboard - 模拟模式 (推荐新手先用这个)
+npm run dashboard:dry
 
-# 交互式 Dashboard (Dry-Run)
-npm run dashboard -- --dry
-
-# 交互式 Dashboard (实盘)
+# 交互式 Dashboard - 实盘模式 (谨慎使用!)
 npm run dashboard
 
-# 数据录制 (用于回测)
+# 生产环境启动 (会先编译)
+npm run start           # 实盘
+npm run start:dry       # 模拟
+
+# ═══════════════════════════════════════════════════════════════
+# 数据工具
+# ═══════════════════════════════════════════════════════════════
+
+# 录制市场数据 (用于回测)
 npm run recorder
 
-# 回测
+# 回测历史数据
 npm run backtest -- --start 2024-01-01 --end 2024-01-31
 
 # 参数优化
 npm run backtest -- --optimize \
   --param movePct:10,15,20 \
   --param sumTarget:0.93,0.95,0.97
+
+# ═══════════════════════════════════════════════════════════════
+# 开发调试
+# ═══════════════════════════════════════════════════════════════
+
+# 开发模式 (热更新)
+npm run dev             # 实盘
+npm run dev:dry         # 模拟
+
+# 调试脚本
+npm run debug:ws        # 测试 WebSocket 连接
+npm run debug:price     # 测试价格事件
+npm run debug:market    # 测试静态市场配置
+
+# ═══════════════════════════════════════════════════════════════
+# 测试与构建
+# ═══════════════════════════════════════════════════════════════
+
+npm run test            # 运行单元测试
+npm run test:coverage   # 测试覆盖率
+npm run build           # 编译 TypeScript
+npm run typecheck       # 类型检查
+npm run lint            # 代码检查
 ```
 
 ## 项目结构
@@ -216,8 +247,7 @@ pmdumphedge/
 │   │   ├── BacktestEngine.ts   # 回测引擎
 │   │   └── ReplayEngine.ts     # 数据回放
 │   ├── ui/                     # 终端 UI
-│   │   ├── Dashboard.ts        # blessed Dashboard (含告警面板)
-│   │   └── TradingDashboard.ts # 专业交易面板 (v0.2.0)
+│   │   └── Dashboard.ts        # blessed Dashboard (含套利分析、订单簿)
 │   ├── utils/                  # 工具类
 │   │   ├── AlertManager.ts     # 告警管理器
 │   │   ├── CircularBuffer.ts   # 环形缓冲区

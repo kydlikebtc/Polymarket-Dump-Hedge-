@@ -118,19 +118,23 @@ export class TradingEngine {
     this.isRunning = true;
 
     try {
+      // 先确保有活跃市场 (自动发现或静态配置)
+      // 必须在 WebSocket 连接之前完成，避免 snapshot 覆盖市场信息
+      const hasMarket = await this.roundManager.ensureActiveMarket();
+      if (!hasMarket) {
+        logger.warn('No market available - waiting for auto-discovery or manual configuration');
+      }
+
       // 连接 WebSocket
       await this.marketWatcher.connect();
 
       // 启动轮次检查
       this.roundManager.startPeriodicCheck();
 
-      // 确保有活跃市场 (自动发现或静态配置)
-      const hasMarket = await this.roundManager.ensureActiveMarket();
+      // 如果有市场，订阅价格
       if (hasMarket) {
         logger.info('Active market ready, subscribing...');
         this.subscribeToCurrentMarket();
-      } else {
-        logger.warn('No market available - waiting for auto-discovery or manual configuration');
       }
 
       logger.info('Trading engine started successfully');

@@ -54,6 +54,28 @@ interface GammaSearchResponse {
 }
 
 /**
+ * CLOB API 市场响应类型
+ */
+interface ClobMarket {
+  condition_id: string;
+  question_id: string;
+  question: string;
+  description?: string;
+  active: boolean;
+  closed: boolean;
+  enable_order_book: boolean;
+  accepting_orders: boolean;
+  minimum_order_size: number;
+  minimum_tick_size: number;
+  tokens?: Array<{
+    token_id: string;
+    outcome: string;
+    price?: number;
+  }>;
+  end_date_iso?: string;
+}
+
+/**
  * 市场发现服务配置
  */
 export interface MarketDiscoveryConfig {
@@ -73,6 +95,7 @@ const DEFAULT_CONFIG: MarketDiscoveryConfig = {
 export class MarketDiscoveryService {
   private config: MarketDiscoveryConfig;
   private httpClient: AxiosInstance;
+  private clobClient: AxiosInstance;  // CLOB API 客户端
   private currentMarket: Btc15mMarket | null = null;
   private nextMarket: Btc15mMarket | null = null;
   private discoveryInterval: NodeJS.Timeout | null = null;
@@ -92,8 +115,18 @@ export class MarketDiscoveryService {
       },
     });
 
+    // CLOB API 客户端用于通过 condition_id 获取市场信息
+    this.clobClient = axios.create({
+      baseURL: process.env.CLOB_API_URL || 'https://clob.polymarket.com',
+      timeout: 15000,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
     logger.info('MarketDiscoveryService initialized', {
       gammaApiUrl: this.config.gammaApiUrl,
+      clobApiUrl: process.env.CLOB_API_URL || 'https://clob.polymarket.com',
       discoveryIntervalMs: this.config.discoveryIntervalMs,
       searchKeywords: this.config.searchKeywords,
     });
@@ -537,6 +570,187 @@ export class MarketDiscoveryService {
       lastDiscovery: this.lastDiscoveryTime,
       errorCount: this.discoveryErrorCount,
     };
+  }
+
+  /**
+   * 通过 Condition ID 获取市场信息
+   * 优先使用 CLOB API，因为它可以直接通过 condition_id 获取
+   */
+  async fetchMarketByConditionId(conditionId: string): Promise<Btc15mMarket | null> {
+    if (!conditionId) {
+      logger.warn('No conditionId provided');
+      return null;
+    }
+
+    // 检查缓存
+    if (this.marketCache.has(conditionId)) {
+      logger.debug('Market found in cache', { conditionId: conditionId.substring(0, 20) + '...' });
+      return this.marketCache.get(conditionId)!;
+    }
+
+    // 优先使用 CLOB API (直接通过 condition_id 获取)
+    try {
+      logger.info('Fetching market by conditionId from CLOB API', {
+        conditionId: conditionId.substring(0, 20) + '...',
+      });
+
+      const response = await this.clobClient.get<ClobMarket>(`/markets/${conditionId}`);
+      const market = response.data;
+
+      if (market && market.tokens && market.tokens.length >= 2) {
+        const parsed = this.parseClobMarket(market);
+        if (parsed) {
+          // 缓存结果
+          this.marketCache.set(conditionId, parsed);
+
+          logger.info('Market fetched successfully from CLOB API', {
+            question: parsed.question,
+            upTokenId: parsed.upTokenId.substring(0, 20) + '...',
+            downTokenId: parsed.downTokenId.substring(0, 20) + '...',
+            endTime: new Date(parsed.endTime).toISOString(),
+            status: parsed.status,
+          });
+          return parsed;
+        }
+      }
+    } catch (error) {
+      logger.warn('CLOB API fetch failed, trying Gamma API...', {
+        conditionId: conditionId.substring(0, 20) + '...',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    // Fallback: 尝试 Gamma API
+    try {
+      const response = await this.httpClient.get<GammaMarket>(`/markets/${conditionId}`);
+
+      if (response.data) {
+        const parsed = this.parseGammaMarket(response.data);
+        if (parsed) {
+          this.marketCache.set(conditionId, parsed);
+          logger.info('Market fetched from Gamma API', {
+            question: parsed.question,
+          });
+          return parsed;
+        }
+      }
+    } catch (error) {
+      logger.debug('Gamma API fetch also failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    logger.warn('Market not found for conditionId', {
+      conditionId: conditionId.substring(0, 20) + '...',
+    });
+    return null;
+  }
+
+  /**
+   * 解析 CLOB API 市场数据为 Btc15mMarket
+   */
+  private parseClobMarket(market: ClobMarket): Btc15mMarket | null {
+    try {
+      // 提取 Token IDs (根据 outcome 匹配)
+      let upTokenId = '';
+      let downTokenId = '';
+
+      for (const token of market.tokens || []) {
+        const outcome = token.outcome.toLowerCase();
+        if (outcome === 'up' || outcome === 'yes') {
+          upTokenId = token.token_id;
+        } else if (outcome === 'down' || outcome === 'no') {
+          downTokenId = token.token_id;
+        }
+      }
+
+      // 如果没找到 Up/Down，使用第一个和第二个 token
+      if (!upTokenId && !downTokenId && market.tokens && market.tokens.length >= 2) {
+        upTokenId = market.tokens[0].token_id;
+        downTokenId = market.tokens[1].token_id;
+      }
+
+      if (!upTokenId || !downTokenId) {
+        logger.debug('Market missing token IDs', { question: market.question });
+        return null;
+      }
+
+      // 解析结束时间
+      let endTime = 0;
+      if (market.end_date_iso) {
+        endTime = new Date(market.end_date_iso).getTime();
+      }
+      // 如果没有结束时间，从描述中解析或设置默认值
+      if (!endTime) {
+        // 尝试从描述中解析日期 (如 "Jan 1 '26 12:00 ET")
+        const desc = market.description || '';
+        const dateMatch = desc.match(/Jan\s+(\d+)\s+'(\d+)\s+(\d+):(\d+)/);
+        if (dateMatch) {
+          const [, day, year, hour, minute] = dateMatch;
+          // 假设是 2026 年
+          const fullYear = 2000 + parseInt(year, 10);
+          // 创建 ET 时区的时间
+          endTime = new Date(`${fullYear}-01-${day.padStart(2, '0')}T${hour}:${minute}:00-05:00`).getTime();
+        }
+      }
+      if (!endTime) {
+        // 默认 1 天后
+        endTime = Date.now() + 24 * 60 * 60 * 1000;
+      }
+
+      // 确定状态
+      let status: 'active' | 'resolved' | 'pending';
+      if (market.closed) {
+        status = 'resolved';
+      } else if (market.active && market.accepting_orders) {
+        status = 'active';
+      } else {
+        status = 'pending';
+      }
+
+      // 生成 slug
+      const slug = market.question
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+
+      // 从 description 估算开始时间
+      let startTime = endTime - 24 * 60 * 60 * 1000;  // 默认假设持续 24 小时
+      const startMatch = (market.description || '').match(/Dec\s+(\d+)\s+'(\d+)\s+(\d+):(\d+)/);
+      if (startMatch) {
+        const [, day, year, hour, minute] = startMatch;
+        const fullYear = 2000 + parseInt(year, 10);
+        startTime = new Date(`${fullYear}-12-${day.padStart(2, '0')}T${hour}:${minute}:00-05:00`).getTime();
+      }
+
+      // 获取价格
+      const outcomePrices: string[] = [];
+      for (const token of market.tokens || []) {
+        outcomePrices.push(token.price?.toString() || '0.5');
+      }
+
+      const parsed: Btc15mMarket = {
+        conditionId: market.condition_id,
+        slug,
+        question: market.question,
+        upTokenId,
+        downTokenId,
+        startTime,
+        endTime,
+        status,
+        outcomes: (market.tokens || []).map(t => t.outcome),
+        outcomePrices: outcomePrices.length > 0 ? outcomePrices : ['0.5', '0.5'],
+      };
+
+      return parsed;
+
+    } catch (error) {
+      logger.warn('Failed to parse CLOB market', {
+        question: market.question,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 }
 

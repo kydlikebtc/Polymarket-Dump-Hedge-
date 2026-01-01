@@ -23,6 +23,7 @@ interface RoundInfo {
   endTime: number;
   upTokenId: string;
   downTokenId: string;
+  marketName: string;      // 市场名称
 }
 
 export class RoundManager {
@@ -52,9 +53,37 @@ export class RoundManager {
 
   /**
    * 从价格快照更新轮次信息
+   * 注意：如果使用静态市场（从 API 获取），不从 snapshot 覆盖轮次信息
    */
   updateFromSnapshot(snapshot: PriceSnapshot): void {
-    // 检查是否是新轮次
+    // 如果正在使用静态市场（已从 API 获取完整信息），不从 snapshot 更新
+    // 这避免了 WebSocket 的 'static-market' 默认值覆盖正确的市场信息
+    if (this.usingStaticMarket) {
+      // 静态市场模式下，完全忽略 snapshot 的 roundSlug 和 secondsRemaining
+      // 使用我们自己从 API 获取的时间来计算剩余时间
+      if (this.currentRound) {
+        const remainingSecs = this.getSecondsRemaining();
+
+        // 检查轮次是否即将结束
+        if (remainingSecs <= ROUND_WARNING_THRESHOLD && !this.roundEndWarningEmitted) {
+          this.emitRoundEndingWarning(remainingSecs);
+        }
+
+        // 检查轮次是否已结束
+        if (remainingSecs <= 0) {
+          this.handleRoundExpired();
+        }
+      }
+
+      // 静态市场模式下不处理任何来自 snapshot 的轮次更新
+      logger.debug('Static market mode - ignoring snapshot round info', {
+        snapshotRoundSlug: snapshot.roundSlug,
+        currentMarketName: this.currentRound?.marketName,
+      });
+      return;
+    }
+
+    // 动态市场模式：检查是否是新轮次
     if (this.currentRound?.slug !== snapshot.roundSlug) {
       this.handleNewRound(snapshot);
     }
@@ -86,6 +115,7 @@ export class RoundManager {
       endTime: Date.now() + snapshot.secondsRemaining * 1000,
       upTokenId: snapshot.upTokenId,
       downTokenId: snapshot.downTokenId,
+      marketName: snapshot.roundSlug, // 默认使用 slug 作为名称
     };
 
     this.roundEndWarningEmitted = false;
@@ -153,6 +183,7 @@ export class RoundManager {
       endTime: marketInfo.endTime,
       upTokenId: marketInfo.upTokenId,
       downTokenId: marketInfo.downTokenId,
+      marketName: marketInfo.roundSlug,
     };
 
     this.roundEndWarningEmitted = false;
@@ -178,6 +209,7 @@ export class RoundManager {
     endTime: number;
     upTokenId: string;
     downTokenId: string;
+    marketName: string;
   } | null {
     return this.currentRound;
   }
@@ -187,6 +219,20 @@ export class RoundManager {
    */
   getCurrentRoundSlug(): string | null {
     return this.currentRound?.slug || null;
+  }
+
+  /**
+   * 获取市场名称
+   */
+  getMarketName(): string {
+    return this.currentRound?.marketName || 'Unknown Market';
+  }
+
+  /**
+   * 获取轮次结束时间
+   */
+  getRoundEndTime(): number {
+    return this.currentRound?.endTime || 0;
   }
 
   /**
@@ -367,16 +413,19 @@ export class RoundManager {
       endTime: market.endTime,
       upTokenId: market.upTokenId,
       downTokenId: market.downTokenId,
+      marketName: market.question || market.slug,
     };
 
     this.roundEndWarningEmitted = false;
 
+    const round = this.currentRound;
     logger.info('Round set from BTC 15m market', {
-      slug: this.currentRound.slug,
-      upTokenId: this.currentRound.upTokenId.substring(0, 20) + '...',
-      downTokenId: this.currentRound.downTokenId.substring(0, 20) + '...',
-      startTime: new Date(this.currentRound.startTime).toISOString(),
-      endTime: new Date(this.currentRound.endTime).toISOString(),
+      slug: round.slug,
+      marketName: round.marketName,
+      upTokenId: round.upTokenId.substring(0, 20) + '...',
+      downTokenId: round.downTokenId.substring(0, 20) + '...',
+      startTime: new Date(round.startTime).toISOString(),
+      endTime: new Date(round.endTime).toISOString(),
       secondsRemaining: this.getSecondsRemaining(),
     });
 
@@ -389,8 +438,8 @@ export class RoundManager {
     }
 
     eventBus.emitEvent('round:new', {
-      roundSlug: this.currentRound.slug,
-      startTime: this.currentRound.startTime,
+      roundSlug: round.slug,
+      startTime: round.startTime,
     });
 
     eventBus.emitEvent('market:switched', market as Btc15mMarketInfo);
@@ -513,32 +562,63 @@ export class RoundManager {
   // ========== 静态市场 Fallback ==========
 
   /**
-   * 使用静态市场配置 (从 .env 加载)
+   * 使用静态市场配置 (从 .env 加载 Condition ID，从 API 获取其他信息)
    * 当自动发现没有找到市场时使用
+   * v0.2.1: 改为从 API 动态获取市场信息
    */
-  useStaticMarket(): boolean {
+  async useStaticMarket(): Promise<boolean> {
     if (!this.staticMarketConfig) {
       logger.warn('No static market config available in .env');
       return false;
     }
 
-    // 设置一个长期有效的轮次 (1年)
-    const now = Date.now();
+    const conditionId = this.staticMarketConfig.conditionId;
+    if (!conditionId) {
+      logger.warn('No CONDITION_ID in static market config');
+      return false;
+    }
+
+    logger.info('Fetching market info from API using CONDITION_ID', {
+      conditionId: conditionId.substring(0, 20) + '...',
+    });
+
+    // 创建临时的 MarketDiscoveryService 来获取市场信息
+    const tempDiscoveryService = new MarketDiscoveryService();
+    const market = await tempDiscoveryService.fetchMarketByConditionId(conditionId);
+
+    if (!market) {
+      logger.error('Failed to fetch market info from API', {
+        conditionId: conditionId.substring(0, 20) + '...',
+      });
+      return false;
+    }
+
+    // 更新静态配置缓存
+    this.staticMarketConfig.upTokenId = market.upTokenId;
+    this.staticMarketConfig.downTokenId = market.downTokenId;
+    this.staticMarketConfig.slug = market.slug;
+    this.staticMarketConfig.marketName = market.question;
+    this.staticMarketConfig.endTime = market.endTime;
+
+    // 设置当前轮次
     this.currentRound = {
-      slug: this.staticMarketConfig.slug || 'static-market',
-      startTime: now,
-      endTime: now + 365 * 24 * 60 * 60 * 1000, // 1年后过期
-      upTokenId: this.staticMarketConfig.upTokenId,
-      downTokenId: this.staticMarketConfig.downTokenId,
+      slug: market.slug,
+      startTime: market.startTime,
+      endTime: market.endTime,
+      upTokenId: market.upTokenId,
+      downTokenId: market.downTokenId,
+      marketName: market.question,
     };
 
     this.usingStaticMarket = true;
     this.roundEndWarningEmitted = false;
 
-    logger.info('Using static market from .env', {
+    logger.info('Market info fetched from API and round set', {
       slug: this.currentRound.slug,
+      marketName: this.currentRound.marketName,
       upTokenId: this.currentRound.upTokenId.substring(0, 20) + '...',
       downTokenId: this.currentRound.downTokenId.substring(0, 20) + '...',
+      endTime: new Date(this.currentRound.endTime).toISOString(),
     });
 
     // 发送轮次开始事件
@@ -549,16 +629,16 @@ export class RoundManager {
 
     // 发送市场切换事件
     eventBus.emitEvent('market:switched', {
-      conditionId: this.staticMarketConfig.conditionId || '',
-      slug: this.currentRound.slug,
-      question: 'Static market from .env configuration',
-      upTokenId: this.currentRound.upTokenId,
-      downTokenId: this.currentRound.downTokenId,
-      startTime: this.currentRound.startTime,
-      endTime: this.currentRound.endTime,
-      status: 'active',
-      outcomes: ['Yes', 'No'],
-      outcomePrices: ['0.5', '0.5'],
+      conditionId: conditionId,
+      slug: market.slug,
+      question: market.question,
+      upTokenId: market.upTokenId,
+      downTokenId: market.downTokenId,
+      startTime: market.startTime,
+      endTime: market.endTime,
+      status: market.status,
+      outcomes: market.outcomes,
+      outcomePrices: market.outcomePrices,
     } as Btc15mMarketInfo);
 
     return true;
@@ -587,6 +667,7 @@ export class RoundManager {
 
   /**
    * 确保有活跃市场 (自动发现优先，静态配置 fallback)
+   * v0.2.1: useStaticMarket 现在是异步的
    */
   async ensureActiveMarket(): Promise<boolean> {
     // 如果已有活跃轮次，直接返回
@@ -615,10 +696,10 @@ export class RoundManager {
       logger.warn('Auto-discovery did not find a market within timeout');
     }
 
-    // Fallback 到静态配置
+    // Fallback 到静态配置 (从 API 动态获取市场信息)
     if (this.staticMarketConfig) {
-      logger.info('Falling back to static market from .env');
-      return this.useStaticMarket();
+      logger.info('Falling back to static market, fetching from API...');
+      return await this.useStaticMarket();
     }
 
     logger.error('No market available (no auto-discovery result and no static config)');

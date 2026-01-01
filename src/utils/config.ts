@@ -232,39 +232,42 @@ export function setConfig(config: BotConfig): void {
 
 /**
  * 静态市场配置 (从 .env 加载)
+ * v0.2.1: 简化为只需 Condition ID，其他信息从 API 动态获取
  */
 export interface StaticMarketConfig {
+  conditionId: string;     // 唯一必需字段，用于从 API 获取其他信息
+  // 以下字段由 API 动态填充
   upTokenId: string;
   downTokenId: string;
-  conditionId: string;
   slug: string;
+  marketName: string;
+  endTime: number;
 }
 
 /**
  * 加载静态市场配置
- * 用于当自动发现没有找到市场时的 fallback
+ * v0.2.1: 只需要 CONDITION_ID，其他信息将从 API 动态获取
  */
 export function loadStaticMarketConfig(): StaticMarketConfig | null {
-  const upTokenId = getEnv('TOKEN_ID_UP', '');
-  const downTokenId = getEnv('TOKEN_ID_DOWN', '');
   const conditionId = getEnv('CONDITION_ID', '');
 
-  if (!upTokenId || !downTokenId) {
-    logger.debug('No static market configured in .env');
+  if (!conditionId) {
+    logger.debug('No CONDITION_ID configured in .env');
     return null;
   }
 
+  // 返回只有 conditionId 的配置，其他字段将由 MarketDiscoveryService 动态填充
   const config: StaticMarketConfig = {
-    upTokenId,
-    downTokenId,
     conditionId,
-    slug: 'static-market',
+    upTokenId: '',       // 待 API 填充
+    downTokenId: '',     // 待 API 填充
+    slug: '',            // 待 API 填充
+    marketName: '',      // 待 API 填充
+    endTime: 0,          // 待 API 填充
   };
 
-  logger.info('Static market config loaded from .env', {
-    upTokenId: upTokenId.substring(0, 20) + '...',
-    downTokenId: downTokenId.substring(0, 20) + '...',
-    conditionId: conditionId ? conditionId.substring(0, 20) + '...' : 'N/A',
+  logger.info('Condition ID loaded from .env, market info will be fetched from API', {
+    conditionId: conditionId.substring(0, 20) + '...',
   });
 
   return config;

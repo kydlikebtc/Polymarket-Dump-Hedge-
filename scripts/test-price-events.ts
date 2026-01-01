@@ -7,12 +7,12 @@ import { MarketWatcher } from '../src/api/MarketWatcher.js';
 import { eventBus } from '../src/utils/EventBus.js';
 import type { PriceSnapshot } from '../src/types/index.js';
 
-// 从 .env 读取配置
+// Bitcoin Up or Down on January 1? 市场配置
 const config = {
   wsUrl: 'wss://ws-subscriptions-clob.polymarket.com/ws/market',
   apiUrl: 'https://clob.polymarket.com',
-  tokenIdUp: '78490642434213550855600439825729670852317345211936381977390919619271067452728',
-  tokenIdDown: '4960072122879914031540087398045925546763584182114633893203762140348078315559',
+  tokenIdUp: '55331466074183692834677717676010788828979064119532113495995295646897520777826',
+  tokenIdDown: '25850824252464438281862640665986230433485390785186664917827449394013177041457',
   shares: 20,
   sumTarget: 0.95,
   movePct: 0.15,

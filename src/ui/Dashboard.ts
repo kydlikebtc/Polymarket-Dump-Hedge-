@@ -400,6 +400,12 @@ export class Dashboard {
       this.updateMarketInfo();
     });
 
+    // 市场切换事件 - 更新市场信息显示
+    eventBus.onEvent('market:switched', () => {
+      this.updateMarketInfo();
+      this.log('市场信息已更新');
+    });
+
     // 告警事件
     eventBus.onEvent('alert:sent', (alert: Alert) => {
       this.recentAlerts.unshift(alert);
@@ -520,7 +526,8 @@ export class Dashboard {
     }
 
     const roundManager = this.engine.getRoundManager();
-    const currentRound = roundManager.getCurrentRoundSlug();
+    const marketName = roundManager.getMarketName();
+    const endTime = roundManager.getRoundEndTime();
     const upToken = roundManager.getUpTokenId();
     const downToken = roundManager.getDownTokenId();
     const latestPrice = this.priceHistory.length > 0 ? this.priceHistory[this.priceHistory.length - 1] : null;
@@ -533,10 +540,21 @@ export class Dashboard {
 
     // 计算剩余时间 (秒)
     const remainingSecs = roundManager.getSecondsRemaining();
-    const minutes = Math.floor(remainingSecs / 60);
+    const hours = Math.floor(remainingSecs / 3600);
+    const minutes = Math.floor((remainingSecs % 3600) / 60);
     const seconds = remainingSecs % 60;
-    const timeStr = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+
+    // 根据剩余时间显示不同格式
+    let timeStr: string;
+    if (hours > 0) {
+      timeStr = `${hours}h ${minutes.toString().padStart(2, '0')}m`;
+    } else {
+      timeStr = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
     const timeColor = remainingSecs < 60 ? 'red' : remainingSecs < 180 ? 'yellow' : 'green';
+
+    // 结束时间格式化 (UTC)
+    const endTimeStr = endTime > 0 ? new Date(endTime).toISOString().replace('T', ' ').substring(0, 19) + ' UTC' : 'N/A';
 
     // UP/DOWN 价格百分比
     const upPrice = latestPrice?.upBestAsk || 0;
@@ -546,10 +564,10 @@ export class Dashboard {
 
     const content = [
       '',
-      `  {bold}Market:{/bold} {cyan-fg}${currentRound || 'BTC Up/Down 15m'}{/cyan-fg}          Time: {${timeColor}-fg}${timeStr}{/${timeColor}-fg}`,
-      `  {green-fg}▲ UP: ${upPct}%{/green-fg}              {red-fg}▼ DOWN: ${downPct}%{/red-fg}`,
-      '',
-      `  {gray-fg}UP Token:{/gray-fg}   ${formatToken(upToken)}    {gray-fg}DOWN Token:{/gray-fg} ${formatToken(downToken)}`,
+      `  {bold}Market:{/bold} {cyan-fg}${marketName}{/cyan-fg}`,
+      `  {bold}Ends:{/bold} {white-fg}${endTimeStr}{/white-fg}    {bold}Remaining:{/bold} {${timeColor}-fg}${timeStr}{/${timeColor}-fg}`,
+      `  {green-fg}▲ UP: ${upPct}%{/green-fg}    {red-fg}▼ DOWN: ${downPct}%{/red-fg}`,
+      `  {gray-fg}UP:{/gray-fg} ${formatToken(upToken)}  {gray-fg}DOWN:{/gray-fg} ${formatToken(downToken)}`,
     ].join('\n');
 
     this.marketInfoBox.setContent(content);
@@ -734,9 +752,10 @@ export class Dashboard {
     const header = '\n  {cyan-fg}TIME         SIDE     PRICE       SIZE      TX HASH{/cyan-fg}\n';
     this.transactionsBox.setContent(header);
 
-    // 定期刷新状态
+    // 定期刷新状态和市场信息（每秒更新剩余时间显示）
     setInterval(() => {
       this.updateStatus();
+      this.updateMarketInfo();
     }, 1000);
   }
 
