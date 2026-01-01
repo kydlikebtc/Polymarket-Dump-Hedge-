@@ -1,6 +1,6 @@
 # Polymarket Dump & Hedge Bot
 
-[![Tests](https://img.shields.io/badge/tests-259%20passed-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-323%20passed-brightgreen)](./tests)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0.0-green)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
@@ -53,6 +53,12 @@ IDLE → WATCHING → LEG1_PENDING → LEG1_FILLED → LEG2_PENDING → COMPLETE
 - **终端界面**: blessed 打造的交互式 Dashboard
 - **数据持久化**: SQLite 存储行情数据和交易记录
 - **Dry-Run 模式**: 模拟交易，安全测试策略
+
+### v0.2.0 新功能
+- **市场自动发现**: 自动发现并切换到最新的 BTC 15 分钟预测市场
+- **轮次自动轮换**: 当前轮次到期后无缝切换到下一轮，无需手动更新 Token ID
+- **专业交易面板**: 全新 TradingDashboard，包含持仓、市场分析、订单簿、交易流水
+- **订单簿深度**: MarketWatcher 支持完整订单簿数据和深度分析
 
 ### 告警系统
 - **多渠道告警**: 支持 Console、Telegram Bot、Discord Webhook
@@ -122,6 +128,10 @@ BUILDER_PASSPHRASE=<Builder Passphrase>
 DRY_RUN=true            # Dry-Run 模式
 READ_ONLY=false         # 只读模式
 
+# v0.2.0: 市场自动发现
+AUTO_DISCOVER_MARKET=true           # 启用自动发现
+MARKET_DISCOVERY_INTERVAL=10000     # 发现间隔 (ms)
+
 # 数据库
 DB_PATH=./data/bot.db
 
@@ -184,11 +194,13 @@ pmdumphedge/
 │   │   ├── DumpDetector.ts     # 暴跌检测器
 │   │   ├── HedgeStrategy.ts    # 对冲策略 (含概率预测)
 │   │   ├── OrderExecutor.ts    # 订单执行器
-│   │   ├── MarketWatcher.ts    # 市场监控器
-│   │   ├── RoundManager.ts     # 轮次管理器
+│   │   ├── RoundManager.ts     # 轮次管理器 (含自动轮换)
 │   │   └── TradingEngine.ts    # 交易引擎 (含告警集成)
 │   ├── api/                    # API 客户端
-│   │   └── PolymarketClient.ts # Polymarket API (含 Builder API)
+│   │   ├── PolymarketClient.ts # Polymarket API (含 Builder API)
+│   │   └── MarketWatcher.ts    # 市场监控器 (含订单簿)
+│   ├── services/               # 服务层
+│   │   └── MarketDiscoveryService.ts  # BTC 15m 市场发现服务
 │   ├── ws/                     # WebSocket 客户端
 │   │   └── WebSocketClient.ts
 │   ├── db/                     # 数据库层
@@ -198,7 +210,8 @@ pmdumphedge/
 │   │   ├── BacktestEngine.ts   # 回测引擎
 │   │   └── ReplayEngine.ts     # 数据回放
 │   ├── ui/                     # 终端 UI
-│   │   └── Dashboard.ts        # blessed Dashboard (含告警面板)
+│   │   ├── Dashboard.ts        # blessed Dashboard (含告警面板)
+│   │   └── TradingDashboard.ts # 专业交易面板 (v0.2.0)
 │   ├── utils/                  # 工具类
 │   │   ├── AlertManager.ts     # 告警管理器
 │   │   ├── CircularBuffer.ts   # 环形缓冲区
@@ -220,8 +233,10 @@ pmdumphedge/
 │   ├── CircularBuffer.test.ts
 │   ├── DumpDetector.test.ts
 │   ├── HedgeStrategy.test.ts
+│   ├── MarketDiscoveryService.test.ts  # v0.2.0
 │   ├── MarketWatcher.test.ts
 │   ├── PolymarketClient.test.ts
+│   ├── RoundManager.test.ts            # v0.2.0 (含自动轮换)
 │   ├── StateMachine.test.ts
 │   ├── TradingEngine.test.ts
 │   └── config.test.ts
@@ -430,14 +445,15 @@ npm run typecheck
 
 ### 测试覆盖率
 
-当前测试套件包含 **259 个测试用例**，覆盖率约 **72%**。
+当前测试套件包含 **323 个测试用例**，覆盖率约 **75%**。
 
 主要测试模块：
-- 核心模块：StateMachine, DumpDetector, HedgeStrategy, TradingEngine
+- 核心模块：StateMachine, DumpDetector, HedgeStrategy, TradingEngine, RoundManager
 - API 客户端：PolymarketClient (含 Builder API)
+- 服务层：MarketDiscoveryService (市场发现)
 - 工具类：CircularBuffer, AlertManager, config
 - 回测引擎：BacktestEngine
-- 市场监控：MarketWatcher
+- 市场监控：MarketWatcher (含订单簿)
 
 ## 回测
 

@@ -476,6 +476,24 @@ ${alert.data ? `\n数据: ${JSON.stringify(alert.data, null, 2)}` : ''}
   clearHistory(): void {
     this.alertHistory = [];
   }
+
+  /**
+   * 获取告警统计信息
+   */
+  getStats(): { todayCount: number; totalCount: number } {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStart = today.getTime();
+
+    const todayCount = this.alertHistory.filter(
+      (alert) => alert.timestamp >= todayStart
+    ).length;
+
+    return {
+      todayCount,
+      totalCount: this.alertHistory.length,
+    };
+  }
 }
 
 // 全局单例

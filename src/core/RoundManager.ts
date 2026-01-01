@@ -1,31 +1,45 @@
 /**
  * 轮次管理器
  * 自动检测和管理 BTC 15分钟轮次
+ * v0.2.0: 集成 MarketDiscoveryService 实现自动轮换
  */
 
 import { logger } from '../utils/logger.js';
 import { eventBus } from '../utils/EventBus.js';
-import type { PriceSnapshot, MarketInfo } from '../types/index.js';
+import { MarketDiscoveryService, type Btc15mMarket } from '../api/MarketDiscoveryService.js';
+import type { PriceSnapshot, MarketInfo, Btc15mMarketInfo } from '../types/index.js';
 
 // BTC 15分钟轮次配置
 const ROUND_WARNING_THRESHOLD = 60; // 剩余60秒时发出警告
+const PRELOAD_THRESHOLD = 30; // 剩余30秒时预加载下一市场
+
+/**
+ * 轮次信息
+ */
+interface RoundInfo {
+  slug: string;
+  startTime: number;
+  endTime: number;
+  upTokenId: string;
+  downTokenId: string;
+}
 
 export class RoundManager {
-  private currentRound: {
-    slug: string;
-    startTime: number;
-    endTime: number;
-    upTokenId: string;
-    downTokenId: string;
-  } | null = null;
-
+  private currentRound: RoundInfo | null = null;
   private roundEndWarningEmitted: boolean = false;
   private checkInterval: NodeJS.Timeout | null = null;
+
+  // v0.2.0: 市场发现服务
+  private discoveryService: MarketDiscoveryService | null = null;
+  private autoDiscoverEnabled: boolean = false;
+  private isTransitioning: boolean = false;
+  private onMarketSwitchCallback: ((market: Btc15mMarket) => Promise<void>) | null = null;
 
   constructor() {
     logger.info('RoundManager initialized', {
       roundDuration: '15 minutes',
       warningThreshold: `${ROUND_WARNING_THRESHOLD}s`,
+      preloadThreshold: `${PRELOAD_THRESHOLD}s`,
     });
   }
 
@@ -275,6 +289,210 @@ export class RoundManager {
     const seconds = remaining % 60;
 
     return `Round: ${this.currentRound.slug} | Time: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  // ========== v0.2.0: 自动市场发现和轮换 ==========
+
+  /**
+   * 启用自动市场发现
+   * @param callback 市场切换时的回调函数
+   */
+  enableAutoDiscover(callback: (market: Btc15mMarket) => Promise<void>): void {
+    if (this.autoDiscoverEnabled) {
+      logger.warn('Auto-discover already enabled');
+      return;
+    }
+
+    this.discoveryService = new MarketDiscoveryService();
+    this.onMarketSwitchCallback = callback;
+    this.autoDiscoverEnabled = true;
+
+    // 监听市场发现事件
+    eventBus.onEvent('market:discovered', (market: Btc15mMarketInfo) => {
+      logger.debug('Market discovered event received', { slug: market.slug });
+    });
+
+    // 启动发现服务
+    this.discoveryService.start();
+
+    logger.info('Auto-discover enabled', {
+      discoveryInterval: '10s',
+      preloadThreshold: `${PRELOAD_THRESHOLD}s`,
+    });
+  }
+
+  /**
+   * 禁用自动市场发现
+   */
+  disableAutoDiscover(): void {
+    if (!this.autoDiscoverEnabled) {
+      return;
+    }
+
+    if (this.discoveryService) {
+      this.discoveryService.stop();
+      this.discoveryService = null;
+    }
+
+    this.onMarketSwitchCallback = null;
+    this.autoDiscoverEnabled = false;
+
+    logger.info('Auto-discover disabled');
+  }
+
+  /**
+   * 从 BTC 15m 市场设置轮次
+   */
+  setFromBtc15mMarket(market: Btc15mMarket): void {
+    const oldSlug = this.currentRound?.slug;
+
+    this.currentRound = {
+      slug: market.slug,
+      startTime: market.startTime,
+      endTime: market.endTime,
+      upTokenId: market.upTokenId,
+      downTokenId: market.downTokenId,
+    };
+
+    this.roundEndWarningEmitted = false;
+
+    logger.info('Round set from BTC 15m market', {
+      slug: this.currentRound.slug,
+      upTokenId: this.currentRound.upTokenId.substring(0, 20) + '...',
+      downTokenId: this.currentRound.downTokenId.substring(0, 20) + '...',
+      startTime: new Date(this.currentRound.startTime).toISOString(),
+      endTime: new Date(this.currentRound.endTime).toISOString(),
+      secondsRemaining: this.getSecondsRemaining(),
+    });
+
+    // 发送市场切换事件
+    if (oldSlug && oldSlug !== market.slug) {
+      eventBus.emitEvent('market:switching', {
+        from: oldSlug,
+        to: market.slug,
+      });
+    }
+
+    eventBus.emitEvent('round:new', {
+      roundSlug: this.currentRound.slug,
+      startTime: this.currentRound.startTime,
+    });
+
+    eventBus.emitEvent('market:switched', market as Btc15mMarketInfo);
+  }
+
+  /**
+   * 自动切换到下一个市场
+   */
+  async autoTransitionToNextMarket(): Promise<boolean> {
+    if (!this.autoDiscoverEnabled || !this.discoveryService) {
+      logger.warn('Auto-discover not enabled, cannot auto-transition');
+      return false;
+    }
+
+    if (this.isTransitioning) {
+      logger.debug('Already transitioning, skipping');
+      return false;
+    }
+
+    this.isTransitioning = true;
+
+    try {
+      logger.info('Starting auto-transition to next market');
+
+      // 先尝试获取已发现的下一个市场
+      let nextMarket = this.discoveryService.getNextMarket();
+
+      // 如果没有，刷新并等待
+      if (!nextMarket) {
+        logger.info('No next market cached, waiting for discovery...');
+        nextMarket = await this.discoveryService.waitForNextMarket(30000);
+      }
+
+      if (!nextMarket) {
+        logger.warn('No next market available after waiting');
+        eventBus.emitEvent('market:wait_for_next', { retryCount: 1 });
+        return false;
+      }
+
+      // 等待新市场激活
+      const now = Date.now();
+      if (nextMarket.startTime > now) {
+        const waitTime = nextMarket.startTime - now + 1000; // 多等1秒确保激活
+        logger.info(`Waiting ${waitTime}ms for market to activate`, {
+          marketSlug: nextMarket.slug,
+          startTime: new Date(nextMarket.startTime).toISOString(),
+        });
+        await this.sleep(Math.min(waitTime, 15000));
+      }
+
+      // 设置新轮次
+      this.setFromBtc15mMarket(nextMarket);
+
+      // 执行回调
+      if (this.onMarketSwitchCallback) {
+        await this.onMarketSwitchCallback(nextMarket);
+      }
+
+      logger.info('Auto-transition completed', {
+        newMarketSlug: nextMarket.slug,
+        secondsRemaining: this.getSecondsRemaining(),
+      });
+
+      return true;
+
+    } catch (error) {
+      logger.error('Auto-transition failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    } finally {
+      this.isTransitioning = false;
+    }
+  }
+
+  /**
+   * 获取发现服务实例
+   */
+  getDiscoveryService(): MarketDiscoveryService | null {
+    return this.discoveryService;
+  }
+
+  /**
+   * 检查是否启用了自动发现
+   */
+  isAutoDiscoverEnabled(): boolean {
+    return this.autoDiscoverEnabled;
+  }
+
+  /**
+   * 获取当前发现的市场
+   */
+  getCurrentDiscoveredMarket(): Btc15mMarket | null {
+    return this.discoveryService?.getCurrentMarket() || null;
+  }
+
+  /**
+   * 获取下一个发现的市场
+   */
+  getNextDiscoveredMarket(): Btc15mMarket | null {
+    return this.discoveryService?.getNextMarket() || null;
+  }
+
+  /**
+   * 强制刷新市场发现
+   */
+  async refreshMarketDiscovery(): Promise<Btc15mMarket | null> {
+    if (!this.discoveryService) {
+      logger.warn('Discovery service not initialized');
+      return null;
+    }
+
+    return this.discoveryService.refresh();
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 

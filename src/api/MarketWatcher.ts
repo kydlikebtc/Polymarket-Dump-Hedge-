@@ -1,6 +1,7 @@
 /**
  * 市场监控器
  * 维护 WebSocket 连接，接收实时价格更新
+ * v0.2.0: 增强订单簿支持
  */
 
 import WebSocket from 'ws';
@@ -11,6 +12,25 @@ import { sleep } from '../utils/index.js';
 import type { PriceSnapshot, MarketInfo, BotConfig } from '../types/index.js';
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+
+// v0.2.0: 订单簿类型
+export interface OrderBookLevel {
+  price: number;
+  size: number;
+}
+
+export interface OrderBook {
+  tokenId: string;
+  asks: OrderBookLevel[];  // 卖单，按价格升序
+  bids: OrderBookLevel[];  // 买单，按价格降序
+  lastUpdate: number;
+}
+
+export interface OrderBookSnapshot {
+  up: OrderBook;
+  down: OrderBook;
+  timestamp: number;
+}
 
 export class MarketWatcher {
   private ws: WebSocket | null = null;
@@ -23,6 +43,12 @@ export class MarketWatcher {
   private currentMarket: MarketInfo | null = null;
   private subscriptions: Set<string> = new Set();
 
+  // v0.2.0: 订单簿存储
+  private orderBooks: Map<string, OrderBook> = new Map();
+  private upTokenId: string = '';
+  private downTokenId: string = '';
+  private readonly ORDER_BOOK_DEPTH = 10; // 保留前10档
+
   // 心跳配置
   private readonly HEARTBEAT_INTERVAL = 30000; // 30秒
   private readonly HEARTBEAT_TIMEOUT = 60000; // 60秒无响应视为断连
@@ -34,6 +60,34 @@ export class MarketWatcher {
     logger.info('MarketWatcher initialized', {
       wsUrl: config.wsUrl,
       bufferSize: 1000,
+      orderBookDepth: this.ORDER_BOOK_DEPTH,
+    });
+  }
+
+  /**
+   * v0.2.0: 设置当前监控的 Token IDs
+   */
+  setTokenIds(upTokenId: string, downTokenId: string): void {
+    this.upTokenId = upTokenId;
+    this.downTokenId = downTokenId;
+
+    // 初始化订单簿
+    this.orderBooks.set(upTokenId, {
+      tokenId: upTokenId,
+      asks: [],
+      bids: [],
+      lastUpdate: 0,
+    });
+    this.orderBooks.set(downTokenId, {
+      tokenId: downTokenId,
+      asks: [],
+      bids: [],
+      lastUpdate: 0,
+    });
+
+    logger.info('Token IDs set for order book tracking', {
+      upTokenId: upTokenId.substring(0, 20) + '...',
+      downTokenId: downTokenId.substring(0, 20) + '...',
     });
   }
 
@@ -233,10 +287,18 @@ export class MarketWatcher {
         downBestBid: this.parsePrice(data.down_best_bid),
       };
 
-      // 如果是 orderbook 格式，从 bids/asks 提取
+      // v0.2.0: 更新订单簿
+      const tokenId = (data.market as string) || (data.asset_id as string) || '';
+
+      // 如果是 orderbook 格式，从 bids/asks 提取并更新订单簿
       if (data.bids && data.asks && Array.isArray(data.bids) && Array.isArray(data.asks)) {
         const bids = data.bids as [string, string][];
         const asks = data.asks as [string, string][];
+
+        // 更新订单簿
+        if (tokenId) {
+          this.updateOrderBook(tokenId, bids, asks);
+        }
 
         if (asks.length > 0) {
           snapshot.upBestAsk = parseFloat(asks[0][0]);
@@ -480,6 +542,164 @@ export class MarketWatcher {
    */
   getReconnectAttempts(): number {
     return this.reconnectAttempts;
+  }
+
+  // ========== v0.2.0: 订单簿相关方法 ==========
+
+  /**
+   * 更新订单簿
+   */
+  private updateOrderBook(tokenId: string, bids: [string, string][], asks: [string, string][]): void {
+    const orderBook = this.orderBooks.get(tokenId);
+    if (!orderBook) {
+      logger.debug('Order book not found for token', { tokenId: tokenId.substring(0, 20) });
+      return;
+    }
+
+    // 解析并排序
+    orderBook.bids = bids
+      .map(([price, size]) => ({ price: parseFloat(price), size: parseFloat(size) }))
+      .filter(level => level.size > 0)
+      .sort((a, b) => b.price - a.price)  // 买单降序
+      .slice(0, this.ORDER_BOOK_DEPTH);
+
+    orderBook.asks = asks
+      .map(([price, size]) => ({ price: parseFloat(price), size: parseFloat(size) }))
+      .filter(level => level.size > 0)
+      .sort((a, b) => a.price - b.price)  // 卖单升序
+      .slice(0, this.ORDER_BOOK_DEPTH);
+
+    orderBook.lastUpdate = Date.now();
+
+    logger.debug('Order book updated', {
+      tokenId: tokenId.substring(0, 20),
+      bidsCount: orderBook.bids.length,
+      asksCount: orderBook.asks.length,
+      bestBid: orderBook.bids[0]?.price,
+      bestAsk: orderBook.asks[0]?.price,
+    });
+  }
+
+  /**
+   * 获取指定 Token 的订单簿
+   */
+  getOrderBook(tokenId: string): OrderBook | null {
+    return this.orderBooks.get(tokenId) || null;
+  }
+
+  /**
+   * 获取 UP Token 订单簿
+   */
+  getUpOrderBook(): OrderBook | null {
+    return this.upTokenId ? this.orderBooks.get(this.upTokenId) || null : null;
+  }
+
+  /**
+   * 获取 DOWN Token 订单簿
+   */
+  getDownOrderBook(): OrderBook | null {
+    return this.downTokenId ? this.orderBooks.get(this.downTokenId) || null : null;
+  }
+
+  /**
+   * 获取完整订单簿快照
+   */
+  getOrderBookSnapshot(): OrderBookSnapshot | null {
+    const upBook = this.getUpOrderBook();
+    const downBook = this.getDownOrderBook();
+
+    if (!upBook || !downBook) {
+      return null;
+    }
+
+    return {
+      up: upBook,
+      down: downBook,
+      timestamp: Date.now(),
+    };
+  }
+
+  /**
+   * 获取最佳买卖价
+   */
+  getBestPrices(): {
+    upBestBid: number;
+    upBestAsk: number;
+    downBestBid: number;
+    downBestAsk: number;
+  } | null {
+    const upBook = this.getUpOrderBook();
+    const downBook = this.getDownOrderBook();
+
+    if (!upBook || !downBook) {
+      return null;
+    }
+
+    return {
+      upBestBid: upBook.bids[0]?.price || 0,
+      upBestAsk: upBook.asks[0]?.price || 0,
+      downBestBid: downBook.bids[0]?.price || 0,
+      downBestAsk: downBook.asks[0]?.price || 0,
+    };
+  }
+
+  /**
+   * 计算订单簿深度 (指定价格范围内的总量)
+   */
+  getDepthInRange(tokenId: string, side: 'bid' | 'ask', priceRange: number): number {
+    const orderBook = this.orderBooks.get(tokenId);
+    if (!orderBook) return 0;
+
+    const levels = side === 'bid' ? orderBook.bids : orderBook.asks;
+    if (levels.length === 0) return 0;
+
+    const bestPrice = levels[0].price;
+    let totalSize = 0;
+
+    for (const level of levels) {
+      const priceDiff = Math.abs(level.price - bestPrice);
+      if (priceDiff <= priceRange) {
+        totalSize += level.size;
+      } else {
+        break;
+      }
+    }
+
+    return totalSize;
+  }
+
+  /**
+   * 获取订单簿价差
+   */
+  getSpread(tokenId: string): number {
+    const orderBook = this.orderBooks.get(tokenId);
+    if (!orderBook || orderBook.asks.length === 0 || orderBook.bids.length === 0) {
+      return 0;
+    }
+
+    return orderBook.asks[0].price - orderBook.bids[0].price;
+  }
+
+  /**
+   * 获取订单簿中间价
+   */
+  getMidPrice(tokenId: string): number {
+    const orderBook = this.orderBooks.get(tokenId);
+    if (!orderBook || orderBook.asks.length === 0 || orderBook.bids.length === 0) {
+      return 0;
+    }
+
+    return (orderBook.asks[0].price + orderBook.bids[0].price) / 2;
+  }
+
+  /**
+   * 清除订单簿数据
+   */
+  clearOrderBooks(): void {
+    this.orderBooks.clear();
+    this.upTokenId = '';
+    this.downTokenId = '';
+    logger.debug('Order books cleared');
   }
 }
 

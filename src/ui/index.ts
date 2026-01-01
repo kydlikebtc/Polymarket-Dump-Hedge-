@@ -3,3 +3,4 @@
  */
 
 export { Dashboard } from './Dashboard.js';
+export { TradingDashboard } from './TradingDashboard.js';

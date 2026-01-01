@@ -185,6 +185,25 @@ export interface BotEvents {
 
   // 告警事件
   'alert:sent': Alert;
+
+  // 市场发现事件 (v0.2.0)
+  'market:discovered': Btc15mMarketInfo;
+  'market:switching': { from: string; to: string };
+  'market:switched': Btc15mMarketInfo;
+  'market:wait_for_next': { retryCount: number };
+}
+
+// ===== 市场发现类型 (v0.2.0) =====
+
+export interface Btc15mMarketInfo {
+  conditionId: string;
+  slug: string;
+  question: string;
+  upTokenId: string;
+  downTokenId: string;
+  startTime: number;
+  endTime: number;
+  status: 'active' | 'resolved' | 'pending';
 }
 
 // ===== 回测类型 =====

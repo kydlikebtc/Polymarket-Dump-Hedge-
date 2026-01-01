@@ -8,6 +8,86 @@
 
 ---
 
+## [0.2.0] - 2026-01-01
+
+### 新增
+
+#### BTC 15 分钟市场自动发现
+- **MarketDiscoveryService** - 自动发现 BTC 15 分钟预测市场
+  - Polymarket Gamma API 集成
+  - 多关键词搜索 (btc, bitcoin)
+  - 智能时间窗口解析
+  - 去重和有效性验证
+  - 缓存和节流控制
+
+#### 轮次自动轮换
+- **RoundManager 增强** - 无缝市场切换
+  - `enableAutoDiscover()` - 启用自动发现
+  - `disableAutoDiscover()` - 禁用自动发现
+  - `setFromBtc15mMarket()` - 从发现的市场设置轮次
+  - `autoTransitionToNextMarket()` - 自动过渡到下一市场
+  - 轮次到期前预加载下一市场
+  - 自动重新订阅 WebSocket
+
+#### 专业交易面板 (TradingDashboard)
+- **持仓面板** - 实时持仓展示
+  - UP/DOWN 持仓进度条
+  - 数量、均价、成本显示
+  - 未实现盈亏计算
+  - 已实现盈亏统计
+
+- **市场分析面板** - 实时市场数据
+  - UP/DOWN 价格
+  - Combined 价格 (UP + DOWN)
+  - Spread 价差百分比
+  - Delta 差值
+
+- **订单簿面板** - 深度数据展示
+  - UP/DOWN 买卖盘
+  - 多档价格和数量
+  - 实时更新
+
+- **交易流水面板** - 最近交易记录
+  - 时间、方向、价格、数量
+  - 交易哈希显示
+
+#### MarketWatcher 订单簿增强
+- **订单簿数据结构** - OrderBook, OrderBookLevel, OrderBookSnapshot
+- **订单簿方法**
+  - `setTokenIds()` - 设置监控的 Token ID
+  - `getOrderBook()` - 获取指定 Token 订单簿
+  - `getUpOrderBook()` / `getDownOrderBook()` - 快捷获取
+  - `getOrderBookSnapshot()` - 完整快照
+  - `getBestPrices()` - 最佳买卖价
+  - `getDepthInRange()` - 价格范围内深度
+  - `getSpread()` - 价差
+  - `getMidPrice()` - 中间价
+  - `clearOrderBooks()` - 清空订单簿
+
+#### AlertManager 增强
+- `getStats()` - 获取告警统计 (今日数量、总数量)
+
+### 配置
+- `AUTO_DISCOVER_MARKET=true` - 启用市场自动发现
+- `MARKET_DISCOVERY_INTERVAL=10000` - 发现间隔 (ms)
+
+### 测试
+- **MarketDiscoveryService.test.ts** - 27 个测试用例
+  - 初始化、市场发现、解析、自动发现服务
+  - 当前/下一市场管理、BTC 15m 验证
+  - waitForNextMarket、并发控制
+
+- **RoundManager.test.ts** - 37 个测试用例
+  - 初始化、快照更新、市场信息
+  - 状态查询、周期检查
+  - 自动发现集成测试
+
+### 改进
+- 测试套件从 259 增加到 **323** 个测试用例
+- 测试覆盖率提升至约 **75%**
+
+---
+
 ## [0.1.0] - 2025-12-31
 
 ### 新增
@@ -114,13 +194,13 @@
 
 ## 开发计划
 
-### v0.2.0 (计划)
+### v0.3.0 (计划)
 - [ ] Web Dashboard 可视化界面
-- [ ] 多市场支持 (ETH, SOL 等)
+- [ ] 多市场并行监控 (ETH, SOL 等)
 - [ ] 高级风控策略
 - [ ] 资金管理模块
 
-### v0.3.0 (计划)
+### v0.4.0 (计划)
 - [ ] 机器学习价格预测
 - [ ] 自动参数调优
 - [ ] 分布式部署支持
@@ -134,5 +214,6 @@
 
 ---
 
-[Unreleased]: https://github.com/user/pmdumphedge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/user/pmdumphedge/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/user/pmdumphedge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/user/pmdumphedge/releases/tag/v0.1.0
